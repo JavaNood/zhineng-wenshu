@@ -1,0 +1,82 @@
+"""会话存储：内存为主，落盘 JSON 快照供回看；单次对话有效，无跨会话记忆。"""
+from __future__ import annotations
+import json
+import time
+import uuid
+from pathlib import Path
+from ..config import RUNTIME_DIR
+
+
+class Session:
+    def __init__(self, question: str, model: str):
+        self.session_id = uuid.uuid4().hex[:12]
+        self.question = question
+        self.model = model
+        self.created = time.time()
+        self.events: list[dict] = []
+        self.plan: dict | None = None
+        self.sub_results: list[dict] = []
+        self.final: dict | None = None
+        self.tokens = {"prompt": 0, "completion": 0, "total": 0}
+
+    def add_event(self, ev: dict) -> None:
+        ev = {"t": time.time(), **ev}
+        self.events.append(ev)
+        self._persist()
+
+    def _persist(self) -> None:
+        path = RUNTIME_DIR / f"{self.session_id}.json"
+        data = {
+            "session_id": self.session_id,
+            "question": self.question,
+            "model": self.model,
+            "created": self.created,
+            "plan": self.plan,
+            "events": self.events,
+            "sub_results": self.sub_results,
+            "final": self.final,
+            "tokens": self.tokens,
+        }
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
+    def set_plan(self, plan: dict) -> None:
+        self.plan = plan
+        self._persist()
+
+    def add_sub_result(self, r: dict) -> None:
+        self.sub_results.append(r)
+        self._persist()
+
+    def set_final(self, final: dict) -> None:
+        self.final = final
+        self._persist()
+
+    def add_tokens(self, usage: dict) -> None:
+        for k in ("prompt", "completion", "total"):
+            self.tokens[k] = self.tokens.get(k, 0) + usage.get(k, 0)
+        self._persist()
+
+    def snapshot(self) -> dict:
+        return {
+            "session_id": self.session_id,
+            "question": self.question,
+            "model": self.model,
+            "plan": self.plan,
+            "events": self.events,
+            "sub_results": self.sub_results,
+            "final": self.final,
+            "tokens": self.tokens,
+        }
+
+
+_STORE: dict[str, Session] = {}
+
+
+def create_session(question: str, model: str) -> Session:
+    s = Session(question, model)
+    _STORE[s.session_id] = s
+    return s
+
+
+def get_session(session_id: str) -> Session | None:
+    return _STORE.get(session_id)

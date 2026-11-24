@@ -1,0 +1,216 @@
+# 智能问数 · 指标语义层（本体）
+# 人工依据 README 与真实 CSV 核对定稿；问数前必须命中本文件，禁止 LLM 自造口径。
+meta:
+  domain: 中国新零售经营分析
+  description: 订单、订单明细、月度目标、日期、客户、门店、商品的星型模型语义说明
+  data_range: "2023-01 ~ 2025-12"
+  currency: CNY
+  source_repo: https://github.com/hccccc01333/powerbi-retail-analysis
+  dataset_dir: data/CN_Ecommerce_Ops
+
+instructions: |
+  金额单位为人民币元，保留两位小数展示。
+  销售额口径 = SUM(实付金额) - SUM(退款金额)，不得用商品金额或成交金额代替。
+  订单量 = COUNT(DISTINCT 订单ID)。
+  时间表达必须落到 dim_日期 的明确年/季度/月/年月；环比/同比要写明对照窗口。
+  退款、取消订单不额外剔除，金额以表内字段按口径表达式聚合；如需只看成交，应在 SQL 中显式过滤订单状态并在结论注明。
+  所有 join 只允许使用 relationships 白名单中的路径，禁止临场猜测关联。
+
+# ============== 标准基础指标（问数意图必须命中此处） ==============
+metrics:
+  - code: sales_amount
+    name: 销售额
+    synonyms: [销售额, 营收, 成交额, 收入, 营业额]
+    expression: "SUM(实付金额) - SUM(退款金额)"
+    additivity: additive
+    filter_expr: null
+    unit: 元
+    dims: [channel, region, store, category_l1, customer_grade, promo, month, quarter, payment, order_status]
+
+  - code: order_count
+    name: 订单量
+    synonyms: [订单数, 单量, 成交订单数, 订单笔数]
+    expression: "COUNT(DISTINCT 订单ID)"
+    additivity: additive
+    filter_expr: null
+    unit: 单
+    dims: [channel, region, store, customer_grade, promo, month, quarter, payment]
+
+  - code: gross_profit
+    name: 毛利额
+    synonyms: [毛利, 毛利总额]
+    expression: "SUM(毛利额)"
+    additivity: additive
+    filter_expr: null
+    unit: 元
+    dims: [channel, region, store, category_l1, customer_grade, month, quarter]
+
+  - code: discount_amount
+    name: 折扣金额
+    synonyms: [优惠金额, 让利]
+    expression: "SUM(折扣金额)"
+    additivity: additive
+    filter_expr: null
+    unit: 元
+    dims: [channel, region, category_l1, promo, month]
+
+# ============== 派生指标（只能引用上方已定义基础指标 / 原子聚合） ==============
+metric_formulas:
+  - code: gross_margin
+    name: 毛利率
+    formula: "gross_profit / sales_amount"
+    unit: 比率
+    note: 毛利率=毛利额/销售额，分母为销售额而非商品金额。
+  - code: avg_order_value
+    name: 客单价
+    synonyms: [件单价均, 单均金额]
+    formula: "sales_amount / order_count"
+    unit: 元/单
+    note: 客单价=销售额/订单量。
+  - code: discount_rate
+    name: 折扣率
+    synonyms: [折扣占比]
+    formula: "SUM(折扣金额) / SUM(商品金额)"
+    unit: 比率
+    note: 折扣率=折扣金额/商品金额，不是/实付金额。
+  - code: sales_target_rate
+    name: 销售目标达成率
+    synonyms: [销售达成率, 目标完成率]
+    formula: "sales_amount / SUM(目标.销售目标)"
+    unit: 比率
+    note: 需将 fact_月度目标 按门店+年月 join 对齐窗口后求和。
+  - code: gross_target_rate
+    name: 毛利目标达成率
+    synonyms: [毛利达成率]
+    formula: "gross_profit / SUM(目标.毛利目标)"
+    unit: 比率
+    note: 需将 fact_月度目标 按门店+年月 join 对齐窗口后求和。
+
+# ============== 数据集与字段 ==============
+datasets:
+  - source: fact_订单
+    file: fact_订单.csv
+    grain: 一行一个订单（50000 行）
+    description: 订单级交易事实表
+    fields:
+      - {name: 订单ID, type: varchar, desc: 订单唯一编号，去重计数用, synonyms: [订单号]}
+      - {name: 订单日期, type: date, desc: 订单发生日期，关联 dim_日期.日期}
+      - {name: 订单时间, type: varchar, desc: 下单时间}
+      - {name: 客户ID, type: varchar, desc: 关联 dim_客户.客户ID}
+      - {name: 门店ID, type: varchar, desc: 关联 dim_门店.门店ID}
+      - {name: 销售渠道, type: varchar, desc: 订单来源渠道}
+      - {name: 支付方式, type: varchar, desc: 支付渠道}
+      - {name: 订单状态, type: varchar, desc: 已完成/已发货/待发货/已退款/已取消}
+      - {name: 商品金额, type: double, desc: 优惠前商品原始金额，折扣率分母}
+      - {name: 折扣金额, type: double, desc: 订单优惠金额}
+      - {name: 运费, type: double, desc: 订单运费}
+      - {name: 实付金额, type: double, desc: 客户实际支付金额，销售额加项}
+      - {name: 退款金额, type: double, desc: 退款金额，销售额减项}
+      - {name: 成本金额, type: double, desc: 订单对应成本}
+      - {name: 毛利额, type: double, desc: 订单毛利}
+      - {name: 是否新客首单, type: varchar, desc: 是/否，客户首单标记}
+
+  - source: fact_订单明细
+    file: fact_订单明细.csv
+    grain: 一行一个订单商品行（87635 行）
+    description: 订单商品明细表，用于类目结构/商品贡献分析
+    fields:
+      - {name: 订单明细ID, type: varchar, desc: 明细唯一编号}
+      - {name: 订单ID, type: varchar, desc: 关联 fact_订单.订单ID}
+      - {name: 商品ID, type: varchar, desc: 关联 dim_商品.商品ID}
+      - {name: 数量, type: int, desc: 购买数量}
+      - {name: 成交单价, type: double, desc: 实际成交单价}
+      - {name: 成交金额, type: double, desc: 明细行成交金额}
+      - {name: 折扣金额, type: double, desc: 明细行优惠金额}
+      - {name: 成本金额, type: double, desc: 明细行成本}
+      - {name: 毛利额, type: double, desc: 明细行毛利}
+
+  - source: fact_月度目标
+    file: fact_月度目标.csv
+    grain: 一行一个门店一个月的目标（1368 行）
+    description: 门店月度目标表，达成率分母来源
+    fields:
+      - {name: 年月, type: varchar, desc: 格式 YYYY-MM，关联 dim_日期.年月}
+      - {name: 门店ID, type: varchar, desc: 关联 dim_门店.门店ID}
+      - {name: 销售目标, type: double, desc: 月度销售目标}
+      - {name: 毛利目标, type: double, desc: 月度毛利目标}
+      - {name: 订单量目标, type: double, desc: 月度订单量目标}
+
+  - source: dim_日期
+    file: dim_日期.csv
+    grain: 一行一天（1096 天，2023-01-01~2025-12-31）
+    description: 日期维度
+    fields:
+      - {name: 日期, type: date, desc: 主键}
+      - {name: 年, type: int, desc: 如 2025}
+      - {name: 季度, type: varchar, desc: 如 Q1}
+      - {name: 月, type: int, desc: 1~12}
+      - {name: 年月, type: varchar, desc: YYYY-MM，关联 fact_月度目标.年月}
+      - {name: 周, type: int, desc: 年内周序}
+      - {name: 星期, type: varchar, desc: 星期几}
+      - {name: 是否周末, type: varchar, desc: 是/否}
+      - {name: 是否月初, type: varchar, desc: 是/否}
+      - {name: 促销标记, type: varchar, desc: 日常/大促/会员日}
+
+  - source: dim_客户
+    file: dim_客户.csv
+    grain: 一行一个客户（8000 行）
+    description: 客户维度
+    fields:
+      - {name: 客户ID, type: varchar, desc: 主键}
+      - {name: 客户等级, type: varchar, desc: 普通/银卡/金卡/黑金}
+      - {name: 性别, type: varchar, desc: 男/女/未知}
+      - {name: 注册省份, type: varchar, desc: 注册省份}
+      - {name: 注册城市, type: varchar, desc: 注册城市}
+      - {name: 注册日期, type: date, desc: 注册日期}
+      - {name: 是否企业客户, type: varchar, desc: 是/否}
+
+  - source: dim_门店
+    file: dim_门店.csv
+    grain: 一行一个门店（38 家）
+    description: 门店维度
+    fields:
+      - {name: 门店ID, type: varchar, desc: 主键}
+      - {name: 门店名称, type: varchar, desc: 门店名}
+      - {name: 大区, type: varchar, desc: 华东/华南/华北/西南/华中/东北/西北}
+      - {name: 省份, type: varchar, desc: 所在省}
+      - {name: 城市, type: varchar, desc: 所在市}
+      - {name: 渠道类型, type: varchar, desc: 综合/线下门店}
+      - {name: 开业日期, type: date, desc: 开业日期}
+
+  - source: dim_商品
+    file: dim_商品.csv
+    grain: 一行一个商品（108 个）
+    description: 商品维度
+    fields:
+      - {name: 商品ID, type: varchar, desc: 主键}
+      - {name: 商品名称, type: varchar, desc: 商品名}
+      - {name: 一级类目, type: varchar, desc: 家电/数码/美妆/食品/服饰/母婴/家居}
+      - {name: 二级类目, type: varchar, desc: 二级分类}
+      - {name: 三级类目, type: varchar, desc: 三级分类}
+      - {name: 品牌, type: varchar, desc: 品牌}
+      - {name: 标价, type: double, desc: 挂牌价}
+      - {name: 成本价, type: double, desc: 成本价}
+
+# ============== 可下钻维度与枚举（LLM 查取值，禁止猜枚举） ==============
+dimensions:
+  - {code: channel, name: 销售渠道, column: 销售渠道, table: fact_订单, values: [线下门店, 天猫旗舰店, 抖音小店, 京东自营, 拼多多, 企业团购]}
+  - {code: region, name: 大区, column: 大区, table: dim_门店, values: [华东, 华南, 华北, 西南, 华中, 东北, 西北]}
+  - {code: store, name: 门店, column: 门店名称, table: dim_门店, values: 见 dim_门店 38 家门店}
+  - {code: category_l1, name: 一级类目, column: 一级类目, table: dim_商品, values: [家电, 数码, 美妆, 食品, 服饰, 母婴, 家居]}
+  - {code: customer_grade, name: 客户等级, column: 客户等级, table: dim_客户, values: [普通, 银卡, 金卡, 黑金]}
+  - {code: promo, name: 促销标记, column: 促销标记, table: dim_日期, values: [日常, 大促, 会员日]}
+  - {code: payment, name: 支付方式, column: 支付方式, table: fact_订单, values: [微信支付, 支付宝, 货到付款, 花呗, 京东白条, 银行卡]}
+  - {code: order_status, name: 订单状态, column: 订单状态, table: fact_订单, values: [已完成, 已发货, 待发货, 已退款, 已取消]}
+  - {code: month, name: 月, column: 年月, table: dim_日期, values: 按 dim_日期.年月 取值}
+  - {code: quarter, name: 季度, column: 季度, table: dim_日期, values: [Q1, Q2, Q3, Q4]}
+
+# ============== join 白名单（只允许这些路径） ==============
+relationships:
+  - {from: "fact_订单.订单日期", to: "dim_日期.日期", type: many-to-one}
+  - {from: "fact_订单.客户ID", to: "dim_客户.客户ID", type: many-to-one}
+  - {from: "fact_订单.门店ID", to: "dim_门店.门店ID", type: many-to-one}
+  - {from: "fact_订单明细.订单ID", to: "fact_订单.订单ID", type: many-to-one}
+  - {from: "fact_订单明细.商品ID", to: "dim_商品.商品ID", type: many-to-one}
+  - {from: "fact_月度目标.门店ID", to: "dim_门店.门店ID", type: many-to-one}
+  - {from: "fact_月度目标.年月", to: "dim_日期.年月", type: many-to-one}

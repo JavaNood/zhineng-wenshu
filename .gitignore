@@ -1,0 +1,18 @@
+# 环境与密钥
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 前端依赖与构建
+frontend/node_modules/
+frontend/dist/
+
+# 数据快照与会话临时文件
+runtime/
+*.log
+
+# 系统
+.DS_Store

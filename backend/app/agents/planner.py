@@ -1,31 +1,10 @@
 """planner：意图三分类拆分、Plan 生成、分析点动态选 Skill（≥2）。"""
 from __future__ import annotations
-import json
-import re
 from .. import llm
 from ..ontology import loader as onto
 from ..skills import loader as skilllib
 from ..schemas import IntentPoint, Plan, PlanStep
-
-
-def _extract_json(text: str) -> dict | list:
-    """从 LLM 输出中提取 JSON（容忍 ```json 包裹与前后说明）。"""
-    if not text:
-        return {}
-    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-    cand = m.group(1) if m else text
-    cand = cand.strip()
-    try:
-        return json.loads(cand)
-    except json.JSONDecodeError:
-        # 截取首个 { 到最后一个 }
-        a, b = cand.find("{"), cand.rfind("}")
-        if a != -1 and b != -1:
-            try:
-                return json.loads(cand[a:b + 1])
-            except json.JSONDecodeError:
-                return {}
-    return {}
+from .textutil import _extract_json
 
 
 def _ontology_brief() -> str:

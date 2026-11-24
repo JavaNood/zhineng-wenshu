@@ -35,6 +35,11 @@ npm run dev          # http://127.0.0.1:5173 ，已代理 /api 到 8000
 ```
 校验本体、指标对齐、4 个 Skill、DuckDB 真实取数、只读拦截、应用可导入。
 
+LangGraph 编排（不调真实模型，校验路由、并行、step 上限、提示词未改）：
+```bash
+python scripts/graph_smoke.py
+```
+
 ## 二、演示话术（现场输入）
 - 问数：`2025 年销售额是多少？环比 2024 年如何？`
 - 分析：`2025Q4 销售额环比 Q3 下降，原因是什么？`（系统动态选 ≥2 个专家并行）
@@ -57,7 +62,7 @@ npm run dev          # http://127.0.0.1:5173 ，已代理 /api 到 8000
 │   ├── ontology/loader.py          # 本体加载、resolve_metric、校验
 │   ├── skills/loader.py            # 技能库加载（解析 */SKILL.md frontmatter+正文）
 │   ├── tools/                     # registry / ontology_tools / sql_tool / skill_tools
-│   ├── agents/                     # planner / supervisor / worker
+│   ├── agents/                     # LangGraph 主图 + ReAct 子图（planner / orchestrator / react_graph）
 │   └── store/session.py            # 会话 JSON 快照
 ├── frontend/ (React + Vite + TS)
 ├── scripts/                     # probe_data.py / smoke_test.py
@@ -78,5 +83,5 @@ npm run dev          # http://127.0.0.1:5173 ，已代理 /api 到 8000
 - 无 Key 时接口返回明确错误事件，不崩溃、不编造。
 
 ## 六、说明
-- 编排为自研轻量 supervisor（asyncio 信号量=3），未引入 LangGraph，预留增强位。
+- 编排为 LangGraph：主图负责意图路由、问数/寒暄、分析扇出与汇聚；子 Agent 用 `Send` 并行，`max_concurrency=3`。问数与专家取数是 ReAct 子图，单 Agent step 仍 ≤60。不挂 checkpoint，单次对话不跨会话记忆。提示词正文未改。
 - 模型白名单：deepseek-chat / deepseek-reasoner，前端可切，后端校验。

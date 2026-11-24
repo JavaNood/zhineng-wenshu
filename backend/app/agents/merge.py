@@ -12,13 +12,16 @@ MERGE_SYS = """你是结果汇聚者。阅读各专家子 Agent 的结论，输�
 规则：共识=≥2个方法共同指向；分歧=结论冲突，挂起待复核，不强行调和；不新增无证据的判断。只输出 JSON。"""
 
 
-async def merge_results(sub_results: list[SubResult], model: str) -> tuple[FinalResult, dict]:
+async def merge_results(
+    sub_results: list[SubResult], model: str, on_reasoning=None,
+) -> tuple[FinalResult, dict]:
     local_usage = {"prompt": 0, "completion": 0, "total": 0}
     blocks = "\n\n".join(
         f"【{r.skill_name}】({r.status})\n{r.conclusion}" for r in sub_results)
     resp = await llm.chat(
         [{"role": "system", "content": MERGE_SYS},
-         {"role": "user", "content": blocks}], model=model)
+         {"role": "user", "content": blocks}],
+        model=model, on_reasoning=on_reasoning)
     for k in ("prompt", "completion", "total"):
         local_usage[k] += resp.get("usage", {}).get(k, 0)
     raw = resp.get("content", "") or ""
@@ -31,11 +34,9 @@ async def merge_results(sub_results: list[SubResult], model: str) -> tuple[Final
         m = re.search(r'"summary"\s*:\s*"((?:[^"\\]|\\.)*)"', raw, re.S)
         if m:
             summary = m.group(1).replace('\\"', '"').replace('\\n', '\n').strip()
-    # 汇总区不得空白：确实提取不到时落一句引导，整体判断以上方专家结论交叉印证为准
+    # 解析不到 summary 字段时，展示模型原文，不另写一句汇总。
     if not summary:
-        print("[merge] summary 未提取到，原始返回前800字：\n", raw[:800])
-        summary = ("各专家已从互补视角完成独立诊断，具体依据见上方各专家结论；"
-                   "总体判断以多方法交叉印证为准。")
+        summary = raw.strip()
     final = FinalResult(
         summary=summary,
         consensus=consensus,

@@ -35,13 +35,16 @@ async def chat_stream(
     reasoning_parts: list[str] = []
     usage = {"prompt": 0, "completion": 0, "total": 0}
 
-    stream = await client.chat.completions.create(
-        model=model,
-        messages=messages,
-        stream=True,
-        stream_options={"include_usage": True},
-        temperature=0.3,
-    )
+    # deepseek-reasoner 不接受 temperature，传了会报错；思维链在 reasoning_content。
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    if "reasoner" not in (model or ""):
+        kwargs["temperature"] = 0.3
+    stream = await client.chat.completions.create(**kwargs)
     async for chunk in stream:
         # usage 可能挂在带空 choice 的收尾 chunk 上，先读，不能只在 choices 为空时读
         u = getattr(chunk, "usage", None)
@@ -68,6 +71,10 @@ async def chat_stream(
     }
 
 
-async def chat(messages: list[dict], model: str = DEFAULT_MODEL) -> dict:
-    """非流式：用于意图分类、Plan 生成等需要完整 JSON 的环节。"""
-    return await chat_stream(messages, model=model)
+async def chat(
+    messages: list[dict],
+    model: str = DEFAULT_MODEL,
+    on_reasoning: Callable[[str], Any] | None = None,
+) -> dict:
+    """需要完整 JSON 的环节。思考模型的 reasoning_content 通过 on_reasoning 原样流出。"""
+    return await chat_stream(messages, model=model, on_reasoning=on_reasoning)

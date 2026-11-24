@@ -40,22 +40,17 @@ PLANNER_SYS = """你是智能问数系统的规划器。把用户问题拆成若
 analysis 点的 skills 填选中的 skill_id；query/chat 点 skills 为空数组。"""
 
 
-async def classify_and_plan(question: str, model: str) -> tuple[list[IntentPoint], dict, str]:
-    user = (
-        f"【本体】\n{_ontology_brief()}\n\n"
-        f"【可用 Skill（专家方法）】\n{_skill_brief()}\n\n"
-        f"【用户问题】{question}"
-    )
-    resp = await llm.chat(
-        [{"role": "system", "content": PLANNER_SYS},
-         {"role": "user", "content": user}],
-        model=model,
-    )
-    usage = resp.get("usage", {})
-    data = _extract_json(resp.get("content", ""))
+def _usage_add(a: dict, b: dict) -> dict:
+    out = {"prompt": 0, "completion": 0, "total": 0}
+    for src in (a or {}, b or {}):
+        for k in out:
+            out[k] += src.get(k, 0) or 0
+    return out
+
+
+def _points_from(data, question: str, *, fallback: bool) -> tuple[list[IntentPoint], str]:
     plan_text = (data.get("plan") or "").strip() if isinstance(data, dict) else ""
     raw_points = data.get("points", []) if isinstance(data, dict) else []
-
     points: list[IntentPoint] = []
     for i, p in enumerate(raw_points):
         intent = p.get("intent", "chat")
@@ -65,17 +60,59 @@ async def classify_and_plan(question: str, model: str) -> tuple[list[IntentPoint
                           action=s.get("action", ""),
                           query_spec=s.get("query_spec", ""))
                  for j, s in enumerate(p.get("steps", []))]
-        plan = Plan(intent=intent, goal=p.get("goal", ""), steps=steps,
-                    skill_ids=p.get("skills", []) if intent == "analysis" else [])
-        # analysis 兜底：至少选 2 个真实存在的 skill
+        skill_ids = []
         if intent == "analysis":
-            valid = [s for s in plan.skill_ids if skilllib.get_skill(s)]
-            if len(valid) < 2:
-                valid = [s["id"] for s in skilllib.list_skills()[:2]]
-            plan.skill_ids = valid
+            skill_ids = [s for s in (p.get("skills") or []) if skilllib.get_skill(s)]
+        plan = Plan(intent=intent, goal=p.get("goal", ""), steps=steps, skill_ids=skill_ids)
         points.append(IntentPoint(index=i, raw_text=p.get("text", ""),
                                   intent=intent, plan=plan))
-    if not points:  # LLM 未返回结构时，整体作为一个 query 点，不伪造
+    if not points and fallback:
         points.append(IntentPoint(index=0, raw_text=question, intent="query",
                                   plan=Plan(intent="query", goal=question)))
+    return points, plan_text
+
+
+def _analysis_short(points: list[IntentPoint]) -> bool:
+    return any(
+        p.intent == "analysis" and p.plan is not None and len(p.plan.skill_ids) < 2
+        for p in points
+    )
+
+
+async def classify_and_plan(
+    question: str, model: str, on_reasoning=None,
+) -> tuple[list[IntentPoint], dict, str]:
+    user = (
+        f"【本体】\n{_ontology_brief()}\n\n"
+        f"【可用 Skill（专家方法）】\n{_skill_brief()}\n\n"
+        f"【用户问题】{question}"
+    )
+    messages = [
+        {"role": "system", "content": PLANNER_SYS},
+        {"role": "user", "content": user},
+    ]
+    resp = await llm.chat(messages, model=model, on_reasoning=on_reasoning)
+    usage = resp.get("usage", {})
+    content = resp.get("content", "")
+    points, plan_text = _points_from(_extract_json(content), question, fallback=True)
+    # 技能选少了就再问一次模型，不用技能列表的前两项冒充它的选择。
+    if _analysis_short(points):
+        messages = messages + [
+            {"role": "assistant", "content": content},
+            {"role": "user", "content": (
+                "analysis 点的 skills 少于 2 个，或含有不在技能列表中的 id。"
+                "请只根据用户问题和技能列表重新输出完整 JSON："
+                "每个 analysis 点从列表中选择不少于 2 个真实存在的 skill_id，"
+                "plan 仍用自然语言说明打算。不要解释，只输出 JSON。"
+            )},
+        ]
+        resp2 = await llm.chat(messages, model=model, on_reasoning=on_reasoning)
+        usage = _usage_add(usage, resp2.get("usage", {}))
+        data2 = _extract_json(resp2.get("content", ""))
+        if isinstance(data2, dict) and data2.get("points"):
+            points2, plan_text2 = _points_from(data2, question, fallback=False)
+            if points2:
+                points = points2
+                if plan_text2:
+                    plan_text = plan_text2
     return points, usage, plan_text

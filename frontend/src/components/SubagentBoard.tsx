@@ -19,6 +19,7 @@ function AgentCell({
   const [showPrompt, setShowPrompt] = useState(false);
   const [showThink, setShowThink] = useState(false);
   const steps = logs[agent.skill_id] || [];
+  const sqlSteps = steps.filter((s) => s.kind === "sql");
   const meta = STATUS_META[agent.status] || STATUS_META.waiting;
   // 该专家自己的取数工具调用（主链之外）
   const myRuns = trace.filter((t) => t.kind === "tool" && t.skill_id === agent.skill_id && t.tool === "run_sql");
@@ -42,34 +43,27 @@ function AgentCell({
       )}
 
       <div className="agent-cell-body">
-        {agent.status === "waiting" && <div className="cell-hint">排队等待派发…</div>}
         {agent.status === "running" && (
           <div className="cell-live">
-            <span className="spinner" /> 正在取数分析…
+            <span className="spinner" />
             {myRuns.length > 0 && (
               <div className="cell-runs">已执行 {myRuns.length} 次查询</div>
             )}
           </div>
         )}
-        {agent.status === "done" && (
-          <div className="cell-done">✓ 已完成取数与诊断，结论待主 Agent 汇总</div>
-        )}
 
-        {/* 该专家自己的思路：与主 Agent 同款、可折叠，逐步展示思考与取数动作 */}
-        {steps.length > 0 && (
+        {(agent.plan?.length || sqlSteps.length > 0) && (
           <div className="cell-thinkbox">
-            <button className="cell-think-toggle" onClick={() => setShowThink((s) => !s)}>
+            <button type="button" className="cell-think-toggle" onClick={() => setShowThink((s) => !s)}>
               <span className="cell-think-arrow">{showThink ? "▼" : "▶"}</span>
-              该专家思路（{steps.length} 步）
+              计划 {sqlSteps.length}/{agent.plan?.length || sqlSteps.length}
             </button>
             {showThink && (
               <div className="cell-thinkbody">
-                {steps.map((s, i) => (
-                  <div key={i} className={`cell-steprow kind-${s.kind}`}>
-                    <span className="cell-stepmark">
-                      {s.kind === "sql" ? "⚙️" : s.kind === "conclusion" ? "🏁" : "💭"}
-                    </span>
-                    <span className="cell-steptext">{s.action || s.text}</span>
+                {(agent.plan?.length ? agent.plan : sqlSteps.map((s, i) => ({ n: i + 1, action: s.action || "" }))).map((p, i) => (
+                  <div key={p.n} className="cell-steprow kind-sql">
+                    <span className="cell-stepmark">{sqlSteps[i] ? "⚙️" : "○"}</span>
+                    <span className="cell-steptext">{p.action}</span>
                   </div>
                 ))}
               </div>

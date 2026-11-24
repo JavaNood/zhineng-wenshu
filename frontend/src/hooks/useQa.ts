@@ -9,6 +9,8 @@ export interface AgentCard {
   conclusion?: string;
   evidences?: any[];
   prompt?: string;
+  plan?: { n: number; action: string }[];
+  planThought?: string;
 }
 
 export interface StepLog {
@@ -16,6 +18,8 @@ export interface StepLog {
   kind: "sql" | "think" | "conclusion";
   text: string;
   action?: string;
+  /** 这一步取数时模型的思维链，挂在计划步骤下面，不当成新的步骤。 */
+  thought?: string;
 }
 
 /** 统一过程时间线：思考(think) 与 工具调用(tool) 按到达顺序交错记录。 */
@@ -26,6 +30,7 @@ export type TraceItem =
 /** 主对话时间线节点：思考 / 工具调用 / 主Agent直答，按事件到达顺序追加。 */
 export type TimelineNode =
   | { kind: "think"; skill_id: string; text: string }
+  | { kind: "act"; skill_id: string; text: string }
   | { kind: "tool"; skill_id: string; tool: string; title: string; detail?: string; sql?: string; body?: string }
   | { kind: "answer"; text: string };
 
@@ -39,7 +44,7 @@ export interface EvidenceView {
 
 export function useQa() {
   const [models, setModels] = useState<string[]>([]);
-  const [model, setModel] = useState("deepseek-chat");
+  const [model, setModel] = useState("deepseek-reasoner");
   const [keyOk, setKeyOk] = useState(true);
   const [busy, setBusy] = useState(false);
   const [intent, setIntent] = useState<any[]>([]);
@@ -105,20 +110,42 @@ export function useQa() {
         setLogs((l) => ({
           ...l,
           [ev.skill_id]: [...(l[ev.skill_id] || []), {
-            step: ev.step, kind: ev.kind, text: ev.text, action: ev.action,
+            step: ev.step, kind: ev.kind, text: ev.text, action: ev.action, thought: ev.thought,
           }],
         }));
         break;
-      case "reasoning":
-        // 主 Agent（planner 表态/选专家/完成播报、query 取数铺垫）进主时间线；专家自身思路归各自栏
-        if (ev.skill_id === "planner" || ev.skill_id === "query") {
-          pushNode({ kind: "think", skill_id: ev.skill_id || "", text: ev.text || "" });
-        }
-        setTrace((t) => [...t, { kind: "think", skill_id: ev.skill_id || "", text: ev.text || "" }]);
+      case "worker_plan":
+        setAgents((a) => ({
+          ...a,
+          [ev.skill_id]: {
+            ...a[ev.skill_id],
+            plan: ev.steps || [],
+            planThought: ev.thought || "",
+          },
+        }));
         break;
+      case "act":
+        if (ev.skill_id === "main" || ev.skill_id === "planner") {
+          pushNode({ kind: "act", skill_id: ev.skill_id || "", text: ev.text || "" });
+        }
+        break;
+      case "reasoning": {
+        // 主 Agent 一轮一个思考段。专家的思维链挂在计划步骤上，不进主时间线，也不拆成步骤。
+        const piece = ev.text || "";
+        const sid = ev.skill_id || "";
+        if (sid === "main" || sid === "planner" || sid === "query") {
+          const cur = tlRef.current;
+          const last = cur[cur.length - 1];
+          tlRef.current = last && last.kind === "think" && last.skill_id === sid
+            ? [...cur.slice(0, -1), { ...last, text: last.text + piece }]
+            : [...cur, { kind: "think", skill_id: sid, text: piece }];
+          setTimeline(tlRef.current);
+        }
+        break;
+      }
       case "tool_call":
-        // 只把主 Agent 的工具（本体查阅/通读本领/主取数）放进主时间线；专家工具归各自栏
-        if (ev.skill_id === "planner" || ev.skill_id === "query") {
+        // 主 Agent 的工具进主时间线；专家工具归各自栏
+        if (ev.skill_id === "main" || ev.skill_id === "planner" || ev.skill_id === "query") {
           pushNode({
             kind: "tool", skill_id: ev.skill_id || "", tool: ev.tool, title: ev.title,
             detail: ev.detail, sql: ev.sql, body: ev.body,
@@ -146,6 +173,8 @@ export function useQa() {
             step: a[s.skill_id]?.step ?? 0,
             conclusion: s.conclusion, evidences: s.evidences,
             prompt: a[s.skill_id]?.prompt,
+            plan: a[s.skill_id]?.plan,
+            planThought: a[s.skill_id]?.planThought,
           },
         }));
         break;

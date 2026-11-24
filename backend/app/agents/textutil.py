@@ -34,6 +34,15 @@ def _extract_sql(text: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
+def _model_line(text: str) -> str | None:
+    """取模型自己写出的第一句，用作步骤标题。"""
+    for ln in (text or "").splitlines():
+        s = ln.strip().lstrip("#").strip()
+        if len(s) >= 4 and not s.startswith("```"):
+            return s[:80]
+    return None
+
+
 def _action_before_sql(text: str, sql: str | None = None) -> str | None:
     """提取 SQL 代码块之前的一句中文动作说明，作为右侧步骤标题。"""
     if not text:

@@ -13,7 +13,7 @@ from ..config import MAX_STEPS
 from ..schemas import Evidence
 from ..tools import sql_tool
 from .runtime import GraphContext, current_cursor
-from .textutil import _action_before_sql, _extract_block, _extract_sql, _rows_preview
+from .textutil import _action_before_sql, _extract_block, _extract_sql, _model_line, _rows_preview
 
 
 # 提示词正文不改，只是随 ReAct 子图从 supervisor / worker 挪到这里。
@@ -57,6 +57,7 @@ class ReactState(TypedDict):
     usage: dict
     route: str
     sql: str
+    step_action: str
 
 
 def _empty_nudge(profile: str) -> str:
@@ -106,7 +107,7 @@ async def agent_node(state: ReactState, runtime: Runtime) -> dict:
         action = _action_before_sql(content) if profile == "query" else _action_before_sql(content, sql)
     elif concl:
         show, kind = concl, "conclusion"
-        action = "形成查询结论" if profile == "query" else "形成分析结论"
+        action = _model_line(concl)
     else:
         show, kind = content.strip()[:500], "think"
         action = None
@@ -124,6 +125,7 @@ async def agent_node(state: ReactState, runtime: Runtime) -> dict:
         "usage": usage,
         "step": step,
         "sql": sql or "",
+        "step_action": action or "",
     }
     if concl and state["evidences"]:
         update["route"] = "done"
@@ -168,7 +170,7 @@ async def sql_node(state: ReactState, runtime: Runtime) -> dict:
     evidences = list(state["evidences"]) + [ev.to_dict()]
     await emit({
         "type": "tool_call", "skill_id": state["skill_id"], "tool": "run_sql",
-        "title": "执行查询 · run_sql",
+        "title": (state.get("step_action") or "").strip() or "run_sql",
         "detail": f"返回 {res['row_count']} 行", "sql": res["sql"],
     })
     preview = _rows_preview(res["rows"][:10])
@@ -255,6 +257,7 @@ async def run_react(
             "usage": {"prompt": 0, "completion": 0, "total": 0},
             "route": "",
             "sql": "",
+            "step_action": "",
         },
         context=context,
         config={"recursion_limit": REACT_RECURSION_LIMIT},

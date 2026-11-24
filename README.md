@@ -45,7 +45,7 @@ python scripts/graph_smoke.py
 - 分析：`2025Q4 销售额环比 Q3 下降，原因是什么？`（系统动态选 ≥2 个专家并行）
 - 组合：`2025 销售额如何？环比如何？为什么变动了？`（拆成 2 问数点 + 1 分析点）
 
-页面可看：意图拆分与 Plan、子 Agent 并行进度（并排）、各专家结论、共识/分歧、汇总、可展开的 SQL/结果证据、Tokens 统计；右上角下拉切换模型（deepseek-chat / deepseek-reasoner）。
+页面可看：意图拆分与 Plan、模型思维链、子 Agent 并行进度（并排）、各专家结论、共识/分歧、汇总、可展开的 SQL/结果证据、Tokens 统计；右上角下拉切换模型，默认 deepseek-reasoner。
 
 ## 三、目录结构
 ```
@@ -83,5 +83,5 @@ python scripts/graph_smoke.py
 - 无 Key 时接口返回明确错误事件，不崩溃、不编造。
 
 ## 六、说明
-- 编排为 LangGraph：主图负责意图路由、问数/寒暄、分析扇出与汇聚；子 Agent 用 `Send` 并行，`max_concurrency=3`。问数与专家取数是 ReAct 子图，单 Agent step 仍 ≤60。不挂 checkpoint，单次对话不跨会话记忆。提示词正文未改。
-- 模型白名单：deepseek-chat / deepseek-reasoner，前端可切，后端校验。
+- 编排为 LangGraph。主 Agent 按 ReAct 一轮只调用一个工具：读本体、执行 SQL、查看技能、派出专家、再汇总。专家先写出计划，再按计划逐步取数。子 Agent 用 `Send` 并行，`max_concurrency=3`，单 Agent step ≤60。不挂 checkpoint。
+- 模型白名单：deepseek-chat / deepseek-reasoner，默认 deepseek-reasoner（返回 reasoning_content）。前端可切，后端校验。页面上的思考与步骤标题取模型当次输出，不写旁白。

@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .config import resolve_model, MODEL_WHITELIST, has_key
+from .config import resolve_model, MODEL_WHITELIST, DEFAULT_MODEL, has_key
 from .db import init_db
 from .store.session import create_session, get_session
 from .agents.supervisor import orchestrate
@@ -33,7 +33,7 @@ def _startup():
 
 @app.get("/api/models")
 def models():
-    return {"models": MODEL_WHITELIST, "default": "deepseek-chat",
+    return {"models": MODEL_WHITELIST, "default": DEFAULT_MODEL,
             "key_configured": has_key()}
 
 

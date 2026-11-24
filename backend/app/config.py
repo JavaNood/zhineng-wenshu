@@ -19,11 +19,11 @@ RUNTIME_DIR.mkdir(exist_ok=True)
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip()
 
-# 模型白名单（本期基线：chat / reasoner），前端可选，后端校验
+# 模型白名单。deepseek-chat 不返回思维链，默认用思考模型 deepseek-reasoner。
 MODEL_WHITELIST = ["deepseek-chat", "deepseek-reasoner"]
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "deepseek-chat").strip()
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "deepseek-reasoner").strip()
 if DEFAULT_MODEL not in MODEL_WHITELIST:
-    DEFAULT_MODEL = "deepseek-chat"
+    DEFAULT_MODEL = "deepseek-reasoner"
 
 # ---- 编排约束（硬约束，需求第十节） ----
 MAX_PARALLEL = 3          # 子 Agent 最大并行度

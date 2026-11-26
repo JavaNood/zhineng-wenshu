@@ -5,6 +5,7 @@ import { TraceStream } from "./components/TraceStream";
 import { SubagentBoard } from "./components/SubagentBoard";
 import { ExpertSteps } from "./components/ExpertSteps";
 import { EvidenceAnchor } from "./components/EvidenceAnchor";
+import { AskCard } from "./components/AskCard";
 import { Md } from "./components/Md";
 
 /** 兜底：旧措辞「该 Skill 视角下的主要原因」统一为「该专家的主要结论」。 */
@@ -41,17 +42,60 @@ function supportNames(support: unknown, agents: Record<string, AgentCard>) {
   return ids.map((id) => agents[String(id)]?.skill_name || String(id)).join("、");
 }
 
+const METRIC_QUESTIONS = [
+  "2024年1月的销售额是多少？",
+  "2025年的订单量是多少？",
+  "2023年的毛利额是多少？",
+  "2024年3月的客单价是多少？",
+];
+const ANALYSIS_QUESTIONS = [
+  "2023年1季度和2季度的销售额是多少，变化的原因是什么？",
+  "2025年1季度和2季度的订单量是多少，变化的原因是什么？",
+  "2024年销售额相对2023年变化的原因是什么？",
+  "2025年上半年毛利额相对去年同期变化的原因是什么？",
+];
+const CHAT_QUESTIONS = [
+  "今天吃什么？",
+  "你好，在吗？",
+  "周末适合去哪玩？",
+  "给我讲个笑话",
+];
+
+function pickOne(pool: string[]) {
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function pickFollowups() {
+  return [pickOne(METRIC_QUESTIONS), pickOne(ANALYSIS_QUESTIONS), pickOne(CHAT_QUESTIONS)];
+}
+
 function ontologyStatusText(on: boolean) {
   return on ? "已开启本体知识访问" : "已关闭本体知识访问能力，Agent回答可信度降低";
 }
 
-function TurnThread(props: PastTurn & { busy: boolean; statusOn?: boolean | null }) {
+function TurnThread(props: PastTurn & {
+  busy: boolean;
+  statusOn?: boolean | null;
+  askCard?: any;
+  askError?: string;
+  askStatus?: string;
+  onAskConfirm?: (selected: string[], text: string) => void;
+  onAskCancel?: () => void;
+  onOpenSkill?: (skillId: string) => void;
+  followups?: string[] | null;
+  followExpert?: { skillId: string; title: string } | null;
+  onPick?: (text: string) => void;
+}) {
   const { question, error, busy, timeline, dispatchAt, agents, logs, trace,
-    chatAnswer, consensus, divergences, summary, tokens, ontologyEnabled, statusOn } = props;
-  const expertAgents = Object.values(agents).filter(
-    (a) => a.skill_id !== "query" && a.status === "done" && a.conclusion
-  );
+    chatAnswer, consensus, divergences, summary, tokens, ontologyEnabled, statusOn,
+    askCard, askError, askStatus, onAskConfirm, onAskCancel, onOpenSkill,
+    followups, followExpert, onPick } = props;
+  const roster = Object.values(agents).filter((a) => a.skill_id !== "query");
+  const expertAgents = roster.filter((a) => a.status === "done" && a.conclusion);
   const hasExperts = expertAgents.length > 0;
+  const stillRunning = roster.some((a) => a.status === "waiting" || a.status === "running");
+  const mainSpoke = Boolean(summary) || !busy;
+  const conclusionsReady = hasExperts && !stillRunning && mainSpoke;
   const beforeNodes = useMemo(
     () => (dispatchAt > 0 ? timeline.slice(0, dispatchAt) : timeline),
     [timeline, dispatchAt],
@@ -60,10 +104,6 @@ function TurnThread(props: PastTurn & { busy: boolean; statusOn?: boolean | null
     () => (dispatchAt > 0 ? timeline.slice(dispatchAt) : []),
     [timeline, dispatchAt],
   );
-  const introAct = afterNodes.findIndex((n) => n.kind === "act");
-  const conclusionsReady = introAct >= 0 && (introAct < afterNodes.length - 1 || !busy || Boolean(summary));
-  const leadNodes = conclusionsReady ? afterNodes.slice(0, introAct + 1) : afterNodes;
-  const tailNodes = conclusionsReady ? afterNodes.slice(introAct + 1) : [];
   const showBot = busy || summary || hasExperts || timeline.length > 0 || chatAnswer;
   return (
     <>
@@ -77,8 +117,8 @@ function TurnThread(props: PastTurn & { busy: boolean; statusOn?: boolean | null
             <TraceStream items={beforeNodes} />
             {chatAnswer && <p className="chat-answer">{chatAnswer}</p>}
             <SubagentBoard agents={agents} logs={logs} trace={trace} />
-            <TraceStream items={leadNodes} />
-            {conclusionsReady && hasExperts && (
+            <TraceStream items={afterNodes} />
+            {conclusionsReady && (
               <section className="block">
                 <h3>各专家诊断结论</h3>
                 <div className="expert-list">
@@ -94,7 +134,6 @@ function TurnThread(props: PastTurn & { busy: boolean; statusOn?: boolean | null
                 </div>
               </section>
             )}
-            <TraceStream items={tailNodes} />
             {hasExperts && (consensus.length > 0 || divergences.length > 0) && (
               <section className="block">
                 <h3>共识与分歧</h3>
@@ -128,11 +167,35 @@ function TurnThread(props: PastTurn & { busy: boolean; statusOn?: boolean | null
       {!busy && !ontologyEnabled && (timeline.length > 0 || chatAnswer || summary || error) && (
         <p className="warn-red">本轮回答未使用本体知识</p>
       )}
-      {!busy && tokens && (
+      {tokens && (
         <p className="turn-tokens">
           输入 {tokens.prompt.toLocaleString()} tokens · 输出 {tokens.completion.toLocaleString()} tokens
         </p>
       )}
+      {followups && followups.length > 0 && onPick && (
+        <div className="followups">
+          <p>
+            {followExpert ? (
+              <>
+                专家
+                <button type="button" className="ask-prompt-link" onClick={() => onOpenSkill?.(followExpert.skillId)}>
+                  {followExpert.title}
+                </button>
+                已经生成好了，你还可以问我：
+              </>
+            ) : "你还可以问我："}
+          </p>
+          <div className="examples">
+            {followups.map((text) => (
+              <button key={text} type="button" onClick={() => onPick(text)}>{text}</button>
+            ))}
+          </div>
+        </div>
+      )}
+      {askCard && onAskConfirm && onAskCancel && (
+        <AskCard ask={askCard} error={askError || ""} onConfirm={onAskConfirm} onCancel={onAskCancel} onOpenSkill={onOpenSkill} />
+      )}
+      {!askCard && askStatus && <p className="ask-status">{askStatus}</p>}
       {statusOn != null && (
         <p className={statusOn ? "ontology-banner on" : "ontology-banner off"}>{ontologyStatusText(statusOn)}</p>
       )}
@@ -149,6 +212,7 @@ export default function App() {
   const [history, setHistory] = useState<PastTurn[]>([]);
   /** 当前这轮已经结束，并且需要在它末尾显示本体状态。下一轮不会自动继承。 */
   const [showLiveStatus, setShowLiveStatus] = useState(false);
+  const [followups, setFollowups] = useState<string[] | null>(null);
   // macOS 中文输入法：选词回车会先结束组词，紧接着再来一次 Enter。这一拍不能当成发送。
   const imeLock = useRef(false);
   const wasBusy = useRef(false);
@@ -156,14 +220,22 @@ export default function App() {
 
   useEffect(() => { q.loadModels(); }, []);
 
+  const followReady = Boolean(round && q.tokens && !q.busy && !q.askCard && !q.askStatus);
   useEffect(() => {
-    if (wasBusy.current && !q.busy && round) {
-      if (history.length === 0 || toggledDuringRound.current) setShowLiveStatus(true);
-      else setShowLiveStatus(false);
+    if (q.busy && !q.askCard && !q.askStatus) {
+      setFollowups(null);
+      return;
+    }
+    if (followReady && !followups) setFollowups(pickFollowups());
+  }, [followReady, followups, q.busy, q.askCard, q.askStatus]);
+
+  useEffect(() => {
+    if (wasBusy.current && !q.busy && round && toggledDuringRound.current) {
+      setShowLiveStatus(true);
       toggledDuringRound.current = false;
     }
     wasBusy.current = q.busy;
-  }, [q.busy, round, history.length]);
+  }, [q.busy, round]);
 
   const onOntology = (checked: boolean) => {
     setOntologyOn(checked);
@@ -256,8 +328,16 @@ export default function App() {
                 timeline={q.timeline} dispatchAt={q.dispatchAt} agents={q.agents}
                 logs={q.logs} trace={q.trace} chatAnswer={q.chatAnswer}
                 consensus={q.consensus} divergences={q.divergences} summary={q.summary}
-                tokens={q.busy ? null : q.tokens} ontologyEnabled={round.ontologyEnabled}
-                statusOn={showLiveStatus && !q.busy ? ontologyOn : null} />
+                tokens={(q.busy && !q.askCard && !q.askStatus) ? null : q.tokens}
+                ontologyEnabled={round.ontologyEnabled}
+                statusOn={showLiveStatus && !q.busy ? ontologyOn : null}
+                askCard={q.askCard} askError={q.askError} askStatus={q.askStatus}
+                onAskConfirm={(selected, text) => q.reply(selected, text)}
+                onAskCancel={() => q.reply([], "", "cancel")}
+                onOpenSkill={q.openSkill}
+                followups={followReady ? followups : null}
+                followExpert={followReady ? q.created : null}
+                onPick={setQuestion} />
             )}
 
             {!q.keyOk && <div className="warn-box">未检测到 DEEPSEEK_API_KEY，请在后端 .env 配置后重启。</div>}
@@ -307,6 +387,17 @@ export default function App() {
           )}
         </aside>
       </div>
+      {q.skillView && (
+        <div className="skill-mask" onClick={q.closeSkill}>
+          <div className="skill-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="skill-panel-head">
+              <b>{q.skillView.title}</b>
+              <button type="button" onClick={q.closeSkill}>关闭</button>
+            </div>
+            <pre className="skill-panel-body">{q.skillView.text}</pre>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

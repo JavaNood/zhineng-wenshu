@@ -149,6 +149,29 @@ body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", 
 .ontology-banner.off { color: var(--bad); }
 .warn-red { color: var(--bad); font-size: 13px; margin: 0 0 10px; }
 .turn-tokens { color: var(--muted); font-size: 12.5px; margin: -6px 0 18px; }
+.ask-card { margin: 0 0 18px; background: #fff; border: 1px solid var(--line); border-radius: 12px;
+  padding: 14px 16px 12px; box-shadow: var(--shadow); }
+.ask-prompt { margin: 0 0 10px; }
+.ask-prompt-link { display: inline; padding: 0; border: none; background: none; color: var(--brand);
+  text-decoration: underline; cursor: pointer; text-align: left; font: inherit; }
+.ask-options { display: flex; flex-direction: column; gap: 8px; }
+.ask-option { display: flex; align-items: center; gap: 8px; }
+.ask-key { font-weight: 650; min-width: 1.2em; }
+.ask-text { flex: 1; min-width: 120px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+.ask-error { color: var(--bad); margin: 8px 0 0; font-size: 13px; }
+.ask-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.ask-cancel, .ask-ok { border-radius: 8px; padding: 6px 14px; cursor: pointer; }
+.ask-cancel { background: #fff; border: 1px solid var(--line); }
+.ask-ok { background: var(--brand); color: #fff; border: none; }
+.ask-status { margin: 0 0 18px; color: var(--brand); }
+.followups { margin: -4px 0 18px; }
+.followups p { margin: 0 0 10px; color: var(--ink); }
+.followups .examples { margin-top: 0; justify-content: flex-start; }
+.skill-mask { position: fixed; inset: 0; background: rgba(15, 23, 42, .35); display: flex; align-items: center; justify-content: center; z-index: 20; }
+.skill-panel { width: min(720px, 92vw); max-height: 80vh; background: #fff; border-radius: 12px; display: flex; flex-direction: column; box-shadow: var(--shadow); }
+.skill-panel-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.skill-panel-head button { border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 4px 10px; cursor: pointer; }
+.skill-panel-body { margin: 0; padding: 14px 16px 18px; overflow: auto; white-space: pre-wrap; font-size: 13px; line-height: 1.6; }
 .composer { display: flex; gap: 10px; padding: 14px 10% 20px; align-items: flex-end; }
 .composer textarea { flex: 1; resize: none; padding: 12px 14px; border: 1px solid var(--line);
   border-radius: 14px; font-size: 14px; font-family: inherit; max-height: 160px; outline: none; }

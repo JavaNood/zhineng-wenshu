@@ -29,6 +29,8 @@ if DEFAULT_MODEL not in MODEL_WHITELIST:
 # ---- 编排约束（硬约束，需求第十节） ----
 MAX_PARALLEL = 3          # 子 Agent 最大并行度
 MAX_STEPS = 60            # 单 Agent step 上限
+SQL_IDLE_NUDGE = 4        # 计划已定、连续这么多轮没有新 SQL，要求下一回复直接查
+SQL_IDLE_STOP = 8         # 再没有新 SQL 就停止该专家，避免空转到步数上限
 MAX_SUB_AGENTS = 3        # 分析意图最多派几个子 Agent（并行度对齐）
 PLAN_STEPS = 20           # 专家计划最多多少步，由模型自己定，到这个数为止
 RESULT_ROWS = 2000        # 查询结果回传和证据存档的同一上限。门店、月份、渠道、门店×月都在这个数以内

@@ -4,16 +4,16 @@ import json
 from ..skills import loader as skilllib
 
 
-def list_skills() -> str:
+def list_skills(session_id: str | None = None) -> str:
     items = [{"id": s["id"], "name": s["name"], "trigger": s["trigger"],
-              "description": s["description"]} for s in skilllib.list_skills()]
+              "description": s["description"]} for s in skilllib.list_skills(session_id)]
     return json.dumps(items, ensure_ascii=False, indent=2)
 
 
-def skill_card(skill_id: str) -> str:
-    card = skilllib.get_skill(skill_id)
+def skill_card(skill_id: str, session_id: str | None = None) -> str:
+    card = skilllib.get_skill(skill_id, session_id)
     if not card:
-        return f"未找到 Skill {skill_id}，可用：{[s['id'] for s in skilllib.list_skills()]}"
+        return f"未找到 Skill {skill_id}，可用：{[s['id'] for s in skilllib.list_skills(session_id)]}"
     return render_skill_card(card)
 
 

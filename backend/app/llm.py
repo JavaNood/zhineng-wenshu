@@ -62,6 +62,7 @@ async def chat_stream(
     on_content: Callable[[str], Any] | None = None,
     on_reasoning: Callable[[str], Any] | None = None,
     tools: list[dict] | None = None,
+    tool_choice: dict | str | None = None,
 ) -> dict:
     """流式对话。on_content/on_reasoning 为增量回调（用于 SSE 实时推送）。
     返回 {content, reasoning, tool_calls, usage:{prompt,completion,total}}。
@@ -81,6 +82,8 @@ async def chat_stream(
     }
     if tools:
         kwargs["tools"] = tools
+    if tool_choice:
+        kwargs["tool_choice"] = tool_choice
     if "reasoner" not in (model or ""):
         kwargs["temperature"] = 0.3
     stream = await client.chat.completions.create(**kwargs)

@@ -64,8 +64,9 @@ async def run_skill_worker(
     known_facts: str = "",
     ontology_enabled: bool = True,
     context=None,
+    session_id: str | None = None,
 ):
-    card = skilllib.get_skill(skill_id)
+    card = skilllib.get_skill(skill_id, session_id)
     local_usage = {"prompt": 0, "completion": 0, "total": 0}
     if not card:
         return SubResult(skill_id=skill_id, skill_name=skill_id,

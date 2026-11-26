@@ -8,6 +8,64 @@ from app.tools import sql_tool
 from app.ontology import loader as onto
 from app.semantic import loader as sem
 from app.skills import loader as skilllib
+from app.skills import files as skillfiles
+from app.agents.main_react import reject_dispatch
+from app.agents.fusion import validate_fuse, validate_rename
+
+
+def _session_skill_roundtrip() -> None:
+    session_id = "smoke-session"
+    try:
+        skillfiles.write_session_skill(
+            session_id, "fuse-1",
+            title="量价与季节融合专家-小周",
+            description="把量价和季节放在一条步骤里。",
+            trigger="销售额变化需要同时看结构和季节",
+            expert_role="融合分析",
+            instructions="1. 先看季节。\n2. 再做量价闭合。",
+            output_schema="季节判断；量价分解",
+            validation="先季节后量价",
+            parents=["value-price-breakdown", "seasonality-diagnosis"],
+            ancestors=["value-price-breakdown", "seasonality-diagnosis"],
+        )
+        base_ids = {item["id"] for item in skilllib.list_skills()}
+        assert "fuse-1" not in base_ids
+        scoped = {item["id"]: item for item in skilllib.list_skills(session_id)}
+        assert "fuse-1" in scoped
+        assert "本会话用户融合的专家" in scoped["fuse-1"]["description"]
+        assert skilllib.load_skills().get("fuse-1") is None
+        card = skilllib.get_skill("fuse-1", session_id)
+        assert card and card["scope"] == "session"
+        assert card["ancestors"] == ["value-price-breakdown", "seasonality-diagnosis"]
+        skillfiles.set_title(session_id, "fuse-1", "自定义名字")
+        assert skilllib.get_skill("fuse-1", session_id)["title"] == "自定义名字"
+        assert reject_dispatch(["fuse-1"], session_id) is None
+        assert reject_dispatch(["fuse-1", "value-price-breakdown"], session_id)
+        assert reject_dispatch(["value-price-breakdown"], session_id)
+        assert reject_dispatch(
+            ["value-price-breakdown", "customer-refund"], session_id) is None
+        options = [
+            {"kind": "expert", "skill_id": "value-price-breakdown"},
+            {"kind": "expert", "skill_id": "seasonality-diagnosis"},
+            {"kind": "text"},
+        ]
+        assert validate_fuse(["value-price-breakdown"], "", options)
+        assert validate_fuse(
+            ["value-price-breakdown", "seasonality-diagnosis"], "只要季节", options)
+        assert validate_fuse(
+            ["value-price-breakdown", "seasonality-diagnosis"], "", options) is None
+        assert validate_fuse([], "只保留季节对照", options) is None
+        rename_options = [
+            {"key": "A", "kind": "choice"},
+            {"key": "B", "kind": "text"},
+        ]
+        assert validate_rename(["A"], "", rename_options) is None
+        assert validate_rename(["B"], "", rename_options)
+        assert validate_rename(["B"], "新名字", rename_options) is None
+        assert validate_rename(["A"], "新名字", rename_options)
+        print("[会话技能] 隔离、改名、派工互斥通过")
+    finally:
+        skillfiles.delete_session_dir(session_id)
 
 
 def main():
@@ -23,15 +81,18 @@ def main():
     m2 = sem.resolve_certified_metric("客单价")
     print("[指标对齐 客单价]", m2["name"], "=", m2.get("formula") or m2.get("expression"))
 
-    # 3) 技能库加载
+    # 3) 技能库加载：基础专家不包含会话目录
     skills = skilllib.list_skills()
     print("[技能库]", [s["id"] for s in skills])
-    assert len(skills) == 4
+    assert len(skills) == 6
     names = {s["name"] for s in skills}
     assert "量价结构拆解专家-小王" in names
     assert "时序季节诊断专家-小黄" in names
     assert "目标与门店对标专家-小李" in names
     assert "客群与退款诊断专家-小陈" in names
+    assert "毛利成本结构专家-小周" in names
+    assert "商品与品牌结构专家-小赵" in names
+    _session_skill_roundtrip()
 
     # 4) DuckDB 真实取数（只读）
     init_db()

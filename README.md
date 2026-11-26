@@ -44,17 +44,17 @@ PYTHONPATH=backend ./.venv/bin/python scripts/smoke_test.py
 PYTHONPATH=backend ./.venv/bin/python scripts/graph_smoke.py
 ```
 
-`smoke_test.py` 校验两层知识、认证指标、四位专家、DuckDB 只读拦截。`graph_smoke.py` 用假模型校验主图路由、专家并行、步数上限和官方 `tool_calls` 协议。
+`smoke_test.py` 校验两层知识、认证指标、六位专家、DuckDB 只读拦截。`graph_smoke.py` 用假模型校验主图路由、专家并行、步数上限和官方 `tool_calls` 协议。
 
 ## 二、页面上能看到什么
 
 - 左上角标题下方是「本体」开关，字号与「智能问数」相同。默认开启。这一轮还在回答时不能切换，切换只影响之后发出的问题。
 - 还没提问时，欢迎语中间显示当前状态：「已开启本体知识访问」或「已关闭本体知识访问能力，Agent回答可信度降低」。
-- 第一轮回答结束后，同一句状态出现在该轮末尾。再拨动开关，这句话跟着变成当前状态，并留在这一轮末尾。下一轮开始后，它不再自动出现；只有用户再次拨动开关，才显示在新的这一轮末尾。
+- 回答结束后不自动把这句状态放在该轮末尾。只有用户拨动开关，才出现在这一轮末尾。下一轮不自动继承。
 - 本体关闭的那一轮，气泡下方有红字「本轮回答未使用本体知识」。本体开着的轮次没有这句。
-- 每一轮结束显示 `输入 N tokens · 输出 N tokens`。再提下一问后，上一轮的数字还在。
+- 每一轮结束显示 `输入 N tokens · 输出 N tokens`。下一行是「你还可以问我：」，三个问题各一类。分析轮等融合取消或改名完成后再出现；改名完成后开头是「专家已经生成好了」。点击问题只填进输入框。再提下一问后，上一轮的数字还在。
 - 模型下拉在右上角，白名单是 `deepseek-chat` 与 `deepseek-reasoner`，默认 `deepseek-reasoner`。
-- 灰色「思考」来自 `reasoning_content`。黑色步骤是模型写给用户的 `content`。工具名和参数走官方 `tool_calls`，页面上是单独的工具卡片。
+- 灰色「思考」来自 `reasoning_content`。黑色步骤是模型写给用户的 `content`。工具名和参数走官方 `tool_calls`，页面上是单独的工具卡片。`finish` 只在服务端收口，不画成工具卡片。寒暄的回复是正文，不把 `finish` 的内部说明再印一遍。
 
 ## 三、演示问题
 
@@ -80,11 +80,13 @@ PYTHONPATH=backend ./.venv/bin/python scripts/graph_smoke.py
 │   ├── logical_datasets.yaml
 │   ├── certified_metrics.yaml
 │   └── sql_planner.yaml
-├── skills/                         # 四位分析专家，目录 id 不变
+├── skills/                         # 六位分析专家，目录 id 不变；会话融合在 skills/_session/
 │   ├── value-price-breakdown/      # 量价结构拆解专家-小王
 │   ├── seasonality-diagnosis/      # 时序季节诊断专家-小黄
 │   ├── benchmark-target/           # 目标与门店对标专家-小李
-│   └── customer-refund/            # 客群与退款诊断专家-小陈
+│   ├── customer-refund/            # 客群与退款诊断专家-小陈
+│   ├── margin-cost/                # 毛利成本结构专家-小周
+│   └── product-brand/              # 商品与品牌结构专家-小赵
 ├── backend/app/
 │   ├── main.py                     # FastAPI、SSE、静态页
 │   ├── llm.py                      # DeepSeek 流式：reasoning_content / content / tool_calls
@@ -120,8 +122,8 @@ DuckDB 视图：`orders`、`items`、`target`、`d_date`、`d_cust`、`d_store`�
 ## 六、硬约束
 
 - 一次模型回复最多 4 个函数。超过的不执行，并以 `role: tool` 返回「未执行」和原因。主循环按回复次数计，上限 32 次。
-- 子 Agent 并行不超过 3。单个专家按回复次数计，上限 60。计划最多 20 步。超限停在已有证据上，不补写完成。
+- 子 Agent 并行不超过 3。单个专家按回复次数计，上限 60。计划最多 20 步。口径齐了之后连续 8 轮没有新 SQL，就停止该专家，不伪造结论。超限停在已有证据上，不补写完成。谁先做完，卡片就先标成已完成。
 - SQL 只允许只读 `SELECT`。写操作在工具层拒绝。
 - 查询和报告只覆盖用户点名的指标、时间和维度。原因、变化、诊断交给专家，主 Agent 不用额外 SQL 自己拆。
-- 单次对话有效，无登录，无跨会话记忆。Key 只放后端 `.env`。
+- 同一页面里连续提问共用一个 `session_id`。融合专家只留在这个会话的 `skills/_session/<session_id>/`。刷新或关闭页面时通知服务端删除。不把上一问的结论带回模型。
 - 不预设业务数字，不用正则把某次演示答案写死。

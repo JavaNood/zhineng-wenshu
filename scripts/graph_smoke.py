@@ -30,6 +30,7 @@ def _prompts_unchanged() -> None:
     assert WORKER_SYS.startswith("你是一位被派遣的分析专家") and "data_map" not in WORKER_SYS
     assert "resolve_certified_metric" in WORKER_SYS and "一次回复最多调用 4 个函数" in WORKER_SYS
     assert "```tools" not in WORKER_SYS and "```tools" not in MAIN_SYS
+    assert "不能让总步数超过第一次收下的计划" in WORKER_SYS
     assert "run_sql" in QUERY_SYS and "```sql" not in QUERY_SYS
     assert len(MERGE_SYS) == 232 and MERGE_SYS.startswith("你是结果汇聚者")
     assert len(PLANNER_SYS) == 960 and PLANNER_SYS.startswith("你是智能问数系统的规划器")
@@ -128,7 +129,7 @@ class _Fake:
                 "divergences": [],
             })]
         if "你好" in question and not names:
-            return "先直接回答。", [_call(self._seq, "finish", {"summary": "你好，需要问数直接说。"})]
+            return "你好，需要问数直接说。", [_call(self._seq, "finish", {"summary": "你好，需要问数直接说。"})]
         if "resolve_certified_metric" not in names:
             return "先对齐认证指标和 SQL 规划。", [
                 _call(self._seq, "resolve_certified_metric", {"metric": "销售额"}),
@@ -217,12 +218,13 @@ async def _run(question: str, fake: _Fake) -> tuple[list[dict], object]:
 async def _chat(fake: _Fake) -> None:
     events, session = await _run("你好", fake)
     types = [e["type"] for e in events]
-    assert types.count("chat_answer") == 1
+    assert "chat_answer" not in types
     assert types.count("tokens") == 1
     assert "query_answer" not in types
     assert "final" not in types
     assert "agent_start" not in types
-    assert events[types.index("chat_answer")]["text"] == "你好，需要问数直接说。"
+    assert any(e["type"] == "act" and e.get("text") == "你好，需要问数直接说。" for e in events)
+    assert not any(e["type"] == "tool_call" and e.get("tool") == "finish" for e in events)
     assert session.tokens["total"] > 0
     assert session.sub_results == []
 
@@ -377,10 +379,57 @@ async def _query_react() -> None:
     assert sub.evidences and sub.evidences[0].row_count == 1
 
 
+def _plan_revision() -> None:
+    from app.agents.plan_execute import _revise_plan
+
+    plan = [
+        {"n": 1, "action": "按客户等级对比两期销售额"},
+        {"n": 2, "action": "按是否新客首单对比两期销售额"},
+        {"n": 3, "action": "按是否企业客户对比两期销售额"},
+        {"n": 4, "action": "按订单状态对比两期退款金额"},
+    ]
+    cap = len(plan)
+    grown = plan + [{"n": 5, "action": "按促销标记交叉客户等级"}]
+    kept, note = _revise_plan(plan, 4, grown, cap)
+    assert kept == plan
+    assert "取数都已完成" in note
+    assert "不要再追加" in note
+
+    same, note = _revise_plan(plan, 2, plan, cap)
+    assert [s["action"] for s in same] == [s["action"] for s in plan]
+    assert "没有变化" in note
+
+    rewritten = [
+        {"n": 1, "action": "按客户等级对比两期销售额"},
+        {"n": 2, "action": "按是否新客首单对比两期销售额"},
+        {"n": 3, "action": "改写后的企业客户对照"},
+        {"n": 4, "action": "改写后的退款对照"},
+    ]
+    revised, note = _revise_plan(plan, 2, rewritten, cap)
+    assert [s["action"] for s in revised] == [
+        "按客户等级对比两期销售额",
+        "按是否新客首单对比两期销售额",
+        "改写后的企业客户对照",
+        "改写后的退款对照",
+    ]
+    assert note.startswith("计划已修订")
+
+    longer = rewritten + [{"n": 5, "action": "再加一步促销交叉"}]
+    held, note = _revise_plan(plan, 2, longer, cap)
+    assert held == plan
+    assert "不能加长" in note
+    assert "按是否企业客户对比两期销售额" in note
+
+    dropped, note = _revise_plan(plan, 2, [], cap)
+    assert [s["action"] for s in dropped] == [s["action"] for s in plan[:2]]
+    assert "取数都已完成" in note
+
+
 async def main() -> None:
     _prompts_unchanged()
     _groups()
     _graph_shape()
+    _plan_revision()
     init_db()
     original = llm.chat_stream
     try:

@@ -12,6 +12,7 @@ frontend/dist/
 
 # 数据快照与会话临时文件
 runtime/
+skills/_session/*/
 *.log
 
 # 系统

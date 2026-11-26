@@ -1,5 +1,5 @@
-import { useCallback, useRef, useState } from "react";
-import { fetchModels, startChat, connectStream } from "../api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { fetchModels, startChat, connectStream, postReply } from "../api";
 
 export interface AgentCard {
   skill_id: string;
@@ -65,7 +65,14 @@ export function useQa() {
   const [evidences, setEvidences] = useState<EvidenceView[]>([]);
   const [tokens, setTokens] = useState<any>(null);
   const [error, setError] = useState("");
+  const [ask, setAsk] = useState<any>(null);
+  const [askError, setAskError] = useState("");
+  const [askStatus, setAskStatus] = useState("");
+  const [created, setCreated] = useState<{ skillId: string; title: string } | null>(null);
+  const [skillView, setSkillView] = useState<{ title: string; text: string } | null>(null);
   const closeRef = useRef<() => void>(() => {});
+  const sessionRef = useRef("");
+  const askRef = useRef<any>(null);
 
   const loadModels = useCallback(async () => {
     const m = await fetchModels();
@@ -204,35 +211,123 @@ export function useQa() {
         break;
       case "tokens":
         setTokens(ev.tokens);
-        setBusy(false);
-        closeRef.current?.();
+        break;
+      case "ask":
+        askRef.current = ev;
+        setAsk(ev);
+        setAskError("");
+        setAskStatus("");
+        setBusy(true);
+        break;
+      case "ask_status":
+        askRef.current = null;
+        setAsk(null);
+        setAskStatus(ev.text || "");
+        setBusy(true);
+        break;
+      case "ask_closed":
+        askRef.current = null;
+        setAsk(null);
+        setAskStatus("");
+        if (ev.card === "rename" && ev.skill_id) {
+          setCreated({
+            skillId: ev.skill_id,
+            title: ev.title || "新专家",
+          });
+        }
         break;
       case "error":
         setError(ev.message);
+        askRef.current = null;
+        setAsk(null);
+        setAskStatus("");
         setBusy(false);
         closeRef.current?.();
         break;
     }
   }, []);
 
-  const ask = useCallback(async (question: string, ontologyEnabled = true) => {
+  const askQuestion = useCallback(async (question: string, ontologyEnabled = true) => {
     setBusy(true);
     setError(""); setChatAnswer(""); setMainAnswer("");
     setConsensus([]); setDivergences([]); setSummary(""); setEvidences([]);
     setTokens(null); setAgents({}); setLogs({}); setIntent([]); setPlan(null);
+    setAsk(null); setAskError(""); setAskStatus(""); setCreated(null);
+    askRef.current = null;
     setTrace([]);
     tlRef.current = [];
     dispatchedRef.current = false;
     setTimeline([]);
     setDispatchAt(0);
     try {
-      const start = await startChat(question, model, ontologyEnabled);
-      closeRef.current = connectStream(start.session_id, handleEvent, () => setBusy(false));
+      let start;
+      try {
+        start = await startChat(question, model, ontologyEnabled, sessionRef.current || undefined);
+      } catch (err) {
+        if (!sessionRef.current) throw err;
+        sessionRef.current = "";
+        start = await startChat(question, model, ontologyEnabled);
+      }
+      sessionRef.current = start.session_id;
+      closeRef.current = connectStream(start.session_id, handleEvent, () => {
+        if (!askRef.current) setBusy(false);
+      });
     } catch (e: any) {
       setError(String(e));
       setBusy(false);
     }
   }, [model, handleEvent]);
+
+  const reply = useCallback(async (selected: string[], text: string, action = "confirm") => {
+    const id = sessionRef.current;
+    const card = askRef.current?.card;
+    if (!id || !card) return;
+    setAskError("");
+    setBusy(true);
+    try {
+      const res = await postReply(id, { card, action, selected, text });
+      if (!res.accepted) {
+        setAskError(res.error || "没有通过");
+        return;
+      }
+      if (res.done) {
+        askRef.current = null;
+        setAsk(null);
+        setAskStatus("");
+        setBusy(false);
+        return;
+      }
+      askRef.current = null;
+      setAsk(null);
+      setAskStatus(card === "fuse" ? "正在调用 skills 构建新的专家，请等待..." : "");
+      closeRef.current = connectStream(id, handleEvent, () => {
+        if (!askRef.current) setBusy(false);
+      });
+    } catch (e: any) {
+      setAskError(String(e.message || e));
+    }
+  }, [handleEvent]);
+
+  useEffect(() => {
+    const onHide = () => {
+      const id = sessionRef.current;
+      if (!id) return;
+      navigator.sendBeacon(`/api/session/${id}/end`);
+    };
+    window.addEventListener("pagehide", onHide);
+    return () => window.removeEventListener("pagehide", onHide);
+  }, []);
+
+  const openSkill = useCallback(async (skillId: string) => {
+    const id = sessionRef.current;
+    if (!id || !skillId) return;
+    const r = await fetch(`/api/session/${id}/skill/${skillId}`);
+    const data = await r.json();
+    if (!r.ok) return;
+    setSkillView({ title: data.title || skillId, text: data.text || "" });
+  }, []);
+
+  const closeSkill = useCallback(() => setSkillView(null), []);
 
   const reset = useCallback(() => {
     closeRef.current?.();
@@ -243,6 +338,7 @@ export function useQa() {
     models, model, setModel, keyOk, busy, intent, plan, agents, logs, trace,
     timeline, dispatchAt,
     chatAnswer, mainAnswer, consensus, divergences, summary, evidences, tokens, error,
-    loadModels, ask, reset,
+    askCard: ask, askError, askStatus, created, skillView,
+    loadModels, ask: askQuestion, reply, openSkill, closeSkill, reset,
   };
 }

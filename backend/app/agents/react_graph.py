@@ -36,9 +36,10 @@ def worker_sys(ontology_enabled: bool) -> str:
         "用接口提供的函数调用工具，不要在正文里写工具名、参数或 JSON。\n"
         "一次回复最多调用 4 个函数。超过 4 个时，多出来的这一轮不会执行，要在下一次回复里继续。\n"
         "写 SQL、以及按结果修订计划，不要和给它们提供输入的工具放在同一次回复里。\n"
-        "修订计划时单独输出 ```plan，只写尚未执行的步骤。要放弃剩余步骤就写 {\"steps\":[]}。\n"
+        "修订计划时单独输出 ```plan，只写尚未执行的步骤。修订不能让总步数超过第一次收下的计划，已完成的步骤不要再写进去。要放弃剩余步骤就写 {\"steps\":[]}。步骤都完成后直接写 ```conclusion，不要再追加步骤。\n"
         "计划步骤只写要查的数据，不要把 resolve_certified_metric、read_sql_plan、describe_schema、read_entity 写成步骤。这些工具不占用计划勾选。\n"
-        "还有未执行步骤时不要写 ```conclusion。全部取数完成后再写：先用数据给出支撑判断，末尾以「## 该专家的主要结论」作为小标题。\n"
+        "计划只写这个问题要回答的取数。技能里的其余下钻不是必做清单，和本题无关的不要写进计划。指标用问题点名的那个，技能里的销售额、毛利额只是例子。\n"
+        "问题要求的数已经取到后就写 ```conclusion，不必做完技能里的每一条。先用数据给出支撑判断，末尾以「## 该专家的主要结论」作为小标题。结论写判断和依据。多项数字对照时，可以用 Markdown 表格，也可以写成句子，由你判断哪种更好读，不必每次都画表。不要写「分析已完成」「没有剩余步骤」这类执行状态。\n"
         "未成功执行过任何 SQL 之前，禁止输出 ```conclusion。不要调用 list_skills、dispatch、report、finish。\n"
     )
     if ontology_enabled:
@@ -46,12 +47,12 @@ def worker_sys(ontology_enabled: bool) -> str:
             "本体访问开启。可以调用 read_entity、read_value_domain、read_relations、read_policies、"
             "read_logical_dataset、resolve_certified_metric、read_sql_plan、describe_schema、run_sql。\n"
             "口径和关联以工具返回为准。写 SQL 之前，更早的回复里必须已经成功调用 resolve_certified_metric 和 read_sql_plan。\n"
-            "可以按观察修订未执行步骤。\n"
+            "这两次成功之后就够了。后面的计划步骤直接 run_sql，不要为每一步重新读本体。修订计划不能代替取数。\n"
         )
     else:
         body = (
             "本体访问已关闭。不能调用实体、值域、关系、策略、逻辑数据集、认证指标和 SQL 规划。\n"
-            "没有本体和认证指标，先调用 describe_schema 看物理表结构，再写 SQL。可以按观察修订未执行步骤。\n"
+            "没有本体和认证指标，先调用 describe_schema 看物理表结构，再写 SQL。describe_schema 成功一次即可，后面的计划步骤直接 run_sql。修订计划不能代替取数。\n"
         )
     return head + body
 

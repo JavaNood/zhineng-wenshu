@@ -36,27 +36,33 @@ function ExpertBlock({ agent, steps }: { agent: AgentCard; steps: StepLog[] }) {
   const plan = agent.plan || [];
   const stepDone = (n: number, action: string) =>
     sqls.some((s) => s.step === n || (s.action && s.action === action));
-  const doneCount = plan.filter((p) => stepDone(p.n, p.action)).length;
+  const finished = agent.status === "done";
+  const executed = plan.filter((p) => stepDone(p.n, p.action));
+  const fallback = sqls.map((s, i) => ({ n: s.step || i + 1, action: s.action || "取数" }));
+  const visible = finished ? (executed.length ? executed : fallback) : plan;
+  const doneCount = finished ? visible.length : executed.length;
+  const total = finished ? visible.length : plan.length;
   return (
     <div className="expert-block">
       <div className="expert-block-head">
         <span className="expert-name">{agent.skill_name}</span>
         <span className={`badge badge-${agent.status}`}>{STATUS_LABEL[agent.status]}</span>
-        <span className="step-count">{plan.length ? `${doneCount}/${plan.length} 步` : `${sqls.length} 步`}</span>
+        <span className="step-count">{total ? `${doneCount}/${total} 步` : `${sqls.length} 步`}</span>
       </div>
 
       <Thought text={agent.planThought} />
 
-      {plan.length > 0 ? (
+      {visible.length > 0 ? (
         <ol className="step-list">
-          {plan.map((p) => {
+          {visible.map((p) => {
             const done = sqls.find((s) => s.step === p.n || (s.action && s.action === p.action));
+            const marked = finished || Boolean(done);
             return (
               <li key={p.n} className="step-row">
                 <div className="step-head plan-head">
                   <span className="step-no">{p.n}</span>
                   <span className="step-title">{p.action}</span>
-                  <span className="plan-flag">{done ? "已执行" : "待执行"}</span>
+                  <span className="plan-flag">{marked ? "已执行" : "待执行"}</span>
                 </div>
                 {done && (
                   <div className="step-detail">

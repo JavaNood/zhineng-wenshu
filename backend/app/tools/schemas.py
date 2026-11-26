@@ -70,7 +70,8 @@ _LIST = _fn("list_skills", "列出分析专家。", {}, [])
 
 _DISPATCH = _fn(
     "dispatch",
-    "派 2 到 3 个专家解释原因。有 SQL 结果时必须先 report。",
+    "派专家解释原因。一轮最多 3 位。没有本会话融合专家时至少 2 位；选了融合专家时可以只派 1 位。"
+    "不要把融合专家和他的父专家或更上层专家派在同一轮。有 SQL 结果时必须先 report。",
     {
         "skills": {"type": "array", "items": {"type": "string"}, "description": "skill_id 列表"},
         "goal": _str("这一次要专家回答的问题"),

@@ -5,14 +5,17 @@ import json
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .config import resolve_model, MODEL_WHITELIST, DEFAULT_MODEL, has_key
 from .db import init_db
-from .store.session import create_session, get_session
+from .store.session import create_session, drop_session, get_session, live_session_ids
 from .agents.supervisor import orchestrate
+from .agents.fusion import build_fuse_ask, reply_error, run_fusion, run_rename
+from .skills.files import delete_session_dir, sweep_session_dirs
+from .skills.loader import get_skill
 
 app = FastAPI(title="智能问数 Demo")
 app.add_middleware(
@@ -25,11 +28,20 @@ class ChatRequest(BaseModel):
     question: str
     model: str | None = None
     ontology_enabled: bool = True
+    session_id: str | None = None
+
+
+class ReplyRequest(BaseModel):
+    card: str
+    action: str
+    selected: list[str] = []
+    text: str = ""
 
 
 @app.on_event("startup")
 def _startup():
     init_db()
+    sweep_session_dirs(live_session_ids())
     from .ontology.loader import validate_ontology
     problems = validate_ontology()
     if problems:
@@ -45,8 +57,45 @@ def models():
 @app.post("/api/chat")
 def chat(req: ChatRequest):
     model = resolve_model(req.model)
-    s = create_session(req.question.strip(), model, req.ontology_enabled)
+    question = req.question.strip()
+    if req.session_id:
+        s = get_session(req.session_id)
+        if not s:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+        s.begin_question(question, model, req.ontology_enabled)
+    else:
+        s = create_session(question, model, req.ontology_enabled)
     return {"session_id": s.session_id, "model": model, "key_configured": has_key()}
+
+
+@app.post("/api/session/{session_id}/reply")
+def reply(session_id: str, req: ReplyRequest):
+    s = get_session(session_id)
+    if not s:
+        return JSONResponse({"error": "session not found"}, status_code=404)
+    err = reply_error(s, req.card, req.action, req.selected, req.text)
+    if err:
+        return {"accepted": False, "error": err}
+    if req.action == "cancel":
+        s.reply = None
+        s.pending = None
+        s.set_ask(None)
+        return {"accepted": True, "done": True}
+    s.reply = {
+        "card": req.card,
+        "action": req.action,
+        "selected": list(req.selected),
+        "text": req.text,
+    }
+    s.pending = "reply"
+    return {"accepted": True, "done": False}
+
+
+@app.post("/api/session/{session_id}/end")
+def end_session(session_id: str):
+    delete_session_dir(session_id)
+    drop_session(session_id)
+    return {"ok": True}
 
 
 @app.get("/api/stream/{session_id}")
@@ -62,7 +111,23 @@ async def stream(session_id: str):
 
     async def runner():
         try:
-            await orchestrate(s.question, s.model, emit, s)
+            job = s.pending
+            s.pending = None
+            if job == "reply":
+                card = (s.ask or {}).get("card")
+                if card == "fuse":
+                    await run_fusion(s, emit)
+                elif card == "rename":
+                    await run_rename(s, emit)
+                else:
+                    await emit({"type": "error", "message": "没有待回答的问题"})
+            elif job == "question":
+                await orchestrate(s.question, s.model, emit, s)
+                ask = build_fuse_ask(s)
+                if ask:
+                    s.set_ask(ask)
+                    await emit(ask)
+            # 流结束后浏览器可能重连。没有新任务时直接结束，不再跑一遍。
         except Exception as e:  # 不降级：推错误事件，由前端展示
             await q.put({"type": "error", "message": f"{type(e).__name__}: {e}"})
         finally:
@@ -96,6 +161,18 @@ async def stream(session_id: str):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.get("/api/session/{session_id}/skill/{skill_id}")
+def session_skill(session_id: str, skill_id: str):
+    s = get_session(session_id)
+    if not s or "/" in skill_id or ".." in skill_id:
+        return JSONResponse({"error": "skill not found"}, status_code=404)
+    card = get_skill(skill_id, session_id)
+    if not card or card.get("scope") != "session" or card.get("session_id") != session_id:
+        return JSONResponse({"error": "skill not found"}, status_code=404)
+    text = Path(card["path"]).read_text(encoding="utf-8")
+    return {"id": card["id"], "title": card.get("title") or card["id"], "text": text}
 
 
 @app.get("/api/session/{session_id}")

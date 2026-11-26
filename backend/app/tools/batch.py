@@ -133,7 +133,7 @@ def _reason(tool: dict, *, names: set[str], total: int, ontology_enabled: bool,
     return f"未知工具 {name}"
 
 
-def run_readonly(tool: dict) -> str:
+def run_readonly(tool: dict, session_id: str | None = None) -> str:
     name = str(tool.get("tool") or "")
     if name == "read_entity":
         return knowledge_tools.read_entity(_arg(tool, "name", "entity", "entity_name"))
@@ -152,7 +152,7 @@ def run_readonly(tool: dict) -> str:
     if name == "describe_schema":
         return sql_tool.describe_schema(_arg(tool, "table", "name"))
     if name == "list_skills":
-        return skill_tools.list_skills()
+        return skill_tools.list_skills(session_id)
     return f"未知工具 {name}"
 
 

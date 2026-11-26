@@ -21,7 +21,10 @@ _BATCH_RULES = """
 用接口提供的函数调用工具。不要在正文里写工具名、参数、tool_use 或 JSON。
 一次回复最多调用 4 个函数。只调用一个时也用函数调用。超过 4 个时，多出来的这一轮不会执行，需要在看到结果后的下一次回复里继续调用。
 互不依赖的查询可以放在同一次回复里。写 SQL、向用户报告、查看专家、派工、收口，都要分成不同的回复：先看见上一步的结果，再做下一步。
-正文只用一两句中文，说明这一步要做什么。这两句会直接展示给用户。没有要补充的话时，正文留空。
+回复分三路，不要混用。思考只放内部推理。正文是给用户看的话，只用一两句中文说明这一步要做什么；没有要补充的话时正文留空。函数参数只放在函数调用里。不要写「分析已完成」「没有剩余步骤」这类执行状态。
+专家结论返回之后，正文必须有一句衔接，告诉用户这几位专家已经分析完成，接下来由你汇总。人数按实际返回的专家数。这句写在正文，不要只写在思考里。summary、consensus、divergences 只放在 finish 的参数里。
+本体开启时，开始查数的那一句写成阅读本体内容和业务语义，不要点出具体指标名或口径公式。
+派专家的那一句说明为什么是这几位，用 list_skills 返回的 name。
 查询和报告只覆盖用户点名的指标、时间和维度。用户没点名的渠道、订单状态、门店、商品、客群等，不要写进 SQL，也不要写进 report 或 finish。
 用户要原因、为什么、变化、诊断时，先只报告点名的数值。解释交给专家：report 成功后再 list_skills、再 dispatch。不要用额外 SQL 自己拆解。
 """
@@ -41,12 +44,14 @@ _COMMON_TOOLS = """
 还可以调用这些函数：
 - run_sql(sql)：一条 DuckDB 只读 SELECT。列用中文原名，视图用 describe_schema 或逻辑数据集给出的名字。只查用户点名的指标、时间和维度。
 - report(text)：已经有 SQL 结果时，单独一次回复先把数值告诉用户。text 里的数字只能来自工具返回，并且只写用户点名的指标、时间和维度，不要附带没问过的拆分。不要和 list_skills、dispatch、run_sql 放在同一次回复里。
-- list_skills()：用户还要解释原因、诊断或对比时，在 report 成功之后的下一次回复单独调用。
-- dispatch(skills, goal)：从刚看过的技能里选 2 到 3 个。没调用过 list_skills 不要派。有 SQL 结果但还没 report 时不要派。
+- list_skills()：用户还要解释原因、诊断或对比时，在 report 成功之后的下一次回复单独调用。返回里如果写明某位是本会话用户融合的专家，问题同样适合多位专家时优先考虑他。不相关就不要为了优先硬选。
+- dispatch(skills, goal)：从刚看过的技能里选。一轮最多 3 位。没有本会话融合专家时至少 2 位；选了融合专家时可以只派他 1 位，也可以再加其他专家，总数不超过 3。不要把融合专家和他的父专家或更上层专家派在同一轮。没调用过 list_skills 不要派。有 SQL 结果但还没 report 时不要派。
   给用户看的那一两句必须使用 list_skills 返回的 name。例如：我派三位专家并行分析：量价结构拆解专家-小王拆解定位订单量和客单价的贡献，时序季节诊断专家-小黄诊断排除季节性因素。
 - finish(summary, consensus, divergences)：结束这轮对话。寒暄、与数据无关的问题直接 finish，不要查数。
+  寒暄时，正文写给用户听的那句话。是不是打招呼、为什么不查数，只写在思考里。summary 与正文相同，不要写「用户仅打招呼，已回应并说明」这类内部说明。
   只问了数值并且已经 report 过，可以 finish，summary 用已经报告的数值。
-  派过专家之后，必须等专家结论返回再 finish：至少两个专家共同指向的写进 consensus，互相冲突的写进 divergences，没有冲突就给空数组。不要编造专家没说过的判断。
+  派过专家之后，必须等专家结论返回再 finish。调用 finish 时，正文写一句衔接，例如「3位专家已经分析完成，我来汇总结论」。这句必须出现在正文，不要只放在思考里，也不要把 summary 写进正文。
+  summary 先写各方一致的结论，几句即可，不要把专家原文再贴一遍。至少两个专家共同指向的写进 consensus，每条一句。不一致的写进 divergences，每条一句，point 里点名专家的 name（title），不要写 skill_id。没有分歧就给空数组。不要编造专家没说过的判断。
   未覆盖、证据不足、某步没取成，不要写进 summary、consensus、divergences。
 禁止编造数字和指标口径。
 """
@@ -70,11 +75,25 @@ def _preface(content: str) -> str:
     return "\n".join(lines[:2])[:300]
 
 
-def initial_messages(question: str, ontology_enabled: bool = True) -> list[dict]:
-    return [
+def initial_messages(question: str, ontology_enabled: bool = True, session_id: str | None = None) -> list[dict]:
+    messages = [
         {"role": "system", "content": main_sys(ontology_enabled)},
         {"role": "user", "content": question},
     ]
+    catalog = _fused_catalog(session_id)
+    if catalog:
+        messages.append({"role": "user", "content": catalog})
+    return messages
+
+
+def _fused_catalog(session_id: str | None) -> str:
+    if not session_id:
+        return ""
+    rows = [item for item in skilllib.list_skills(session_id) if item.get("scope") == "session"]
+    if not rows:
+        return ""
+    lines = [f"- {item['id']}｜{item['name']}：{item['description']}" for item in rows]
+    return "本会话已有的融合专家。分析问题时与基础专家一起考虑：\n" + "\n".join(lines)
 
 
 def _add_usage(resp_usage: dict, session) -> None:
@@ -126,7 +145,7 @@ async def main_turn(state: dict, runtime: Runtime) -> dict:
         if _WHY.search(question) and not state.get("dispatched") and not state.get("why_nudged"):
             return {
                 **base, "route": "nudge", "why_nudged": True,
-                "nudge": "工具没有执行：这个问题在问原因或诊断，还没有派出专家。请先 list_skills，再 dispatch 至少 2 个技能，不要直接 finish。",
+                "nudge": "工具没有执行：这个问题在问原因或诊断，还没有派出专家。请先 list_skills，再 dispatch。没有本会话融合专家时至少 2 位；有融合专家时可以只派他 1 位。不要直接 finish。",
             }
         await _emit_finish(state, tools[0], preface, content, emit, session)
         return {**base, "route": "stop"}
@@ -141,7 +160,9 @@ async def _emit_finish(state, tool, preface, content, emit, session) -> None:
     for pkt in state.get("worker_packets") or []:
         evidences.extend((pkt.get("sub") or {}).get("evidences") or [])
     if not state.get("has_sql") and not state.get("dispatched"):
-        await emit({"type": "chat_answer", "text": summary})
+        # 正文已经展示过。寒暄的 summary 只在没有正文时才当作回复，避免把内部判断再印一遍。
+        if not (content or "").strip() and summary:
+            await emit({"type": "chat_answer", "text": summary})
         return
     if state.get("dispatched"):
         final = FinalResult(summary=summary, consensus=consensus, divergences=divergences)
@@ -174,8 +195,41 @@ async def nudge_node(state: dict, runtime: Runtime) -> dict:
     return {"messages": messages, "route": ""}
 
 
+def reject_dispatch(picked: list[str], session_id: str | None) -> str | None:
+    """人数和祖先互斥。通过时返回 None。融合专家的 ancestors 含父专家和更上层。"""
+    cards = []
+    for sid in picked[:MAX_SUB_AGENTS]:
+        card = skilllib.get_skill(sid, session_id)
+        if card:
+            cards.append(card)
+    if not cards:
+        return "有效的 skill_id 少于 2 个"
+    fused = [card for card in cards if card.get("scope") == "session"]
+    if not fused and len(cards) < 2:
+        return "有效的 skill_id 少于 2 个"
+    picked_ids = {card["id"] for card in cards}
+    parts = []
+    for card in cards:
+        if card.get("scope") != "session":
+            continue
+        hit = [aid for aid in (card.get("ancestors") or []) if aid in picked_ids]
+        if not hit:
+            continue
+        names = []
+        for aid in hit:
+            other = skilllib.get_skill(aid, session_id) or {}
+            names.append(other.get("title") or aid)
+        who = card.get("title") or card["id"]
+        parts.append(f"{who} 与 {'、'.join(names)} 不能同时出场")
+    if not parts:
+        return None
+    return "；".join(parts) + "。请去掉冲突的专家后重新 dispatch。"
+
+
 async def tools_node(state: dict, runtime: Runtime) -> dict:
     emit = runtime.context["emit"]
+    session = runtime.context["session"]
+    session_id = getattr(session, "session_id", None)
     tools = list(state.get("pending") or [])
     decisions = classify(
         tools,
@@ -225,10 +279,17 @@ async def tools_node(state: dict, runtime: Runtime) -> dict:
             })
             continue
         if name == "dispatch":
-            picked = [s for s in (tool.get("skills") or []) if isinstance(s, str) and skilllib.get_skill(s)]
-            picked = list(dict.fromkeys(picked))[:MAX_SUB_AGENTS]
-            if len(picked) < 2:
-                reason = "有效的 skill_id 少于 2 个"
+            raw = [s for s in (tool.get("skills") or []) if isinstance(s, str)]
+            picked = []
+            for sid in raw:
+                if sid in picked:
+                    continue
+                if skilllib.get_skill(sid, session_id):
+                    picked.append(sid)
+                if len(picked) >= MAX_SUB_AGENTS:
+                    break
+            reason = reject_dispatch(picked, session_id)
+            if reason:
                 skipped.append((tool, reason))
                 await emit({
                     "type": "tool_call", "skill_id": "main", "tool": "dispatch",
@@ -237,7 +298,7 @@ async def tools_node(state: dict, runtime: Runtime) -> dict:
                 continue
             titles = []
             for sid in picked:
-                card = skilllib.get_skill(sid) or {}
+                card = skilllib.get_skill(sid, session_id) or {}
                 titles.append(card.get("title") or sid)
             body = "已派出：" + "、".join(titles)
             executed.append((tool, body))
@@ -261,7 +322,7 @@ async def tools_node(state: dict, runtime: Runtime) -> dict:
             updates["reported"] = True
             updates["known_facts"] = [text]
             continue
-        body = run_readonly(tool)
+        body = run_readonly(tool, session_id)
         executed.append((tool, body))
         await emit({
             "type": "tool_call", "skill_id": "main", "tool": name,
@@ -312,6 +373,10 @@ def dispatch_observation(subs: list[dict]) -> str:
     return (
         "工具 dispatch 的返回：\n"
         + blocks
-        + "\n这些是专家刚刚返回的结论。下一步调用 finish，根据这些结论写 summary、consensus、divergences。\n"
-        "divergences 只写专家结论互相冲突的地方。未覆盖或证据不足不要写。"
+        + "\n这些是专家刚刚返回的结论。\n"
+        "正文写一句衔接，告诉用户这几位专家已经分析完成，接下来由你汇总。人数用上面实际返回的专家人数。\n"
+        "这句必须写在正文，不要只写在思考里。summary、consensus、divergences 只放在 finish 的参数里。\n"
+        "然后调用 finish。summary 先写各方一致的结论，几句即可，不要把专家原文再贴一遍。\n"
+        "consensus 只收至少两位共同指向的判断，每条一句。\n"
+        "divergences 只写互相冲突的判断，每条一句，point 里点名专家的 name。没有分歧就给空数组。未覆盖或证据不足不要写。\n"
     )

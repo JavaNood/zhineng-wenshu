@@ -15,7 +15,6 @@ const TOOL_ICON: Record<string, string> = {
   run_sql: "⚙️",
   report: "📝",
   dispatch: "👥",
-  finish: "📝",
 };
 
 const REAL_TOOLS = new Set(Object.keys(TOOL_ICON));
@@ -102,12 +101,7 @@ export function TraceStream({ items }: { items: TimelineNode[] }) {
           return <ThinkCard key={i} text={b.node.text} live={i === blocks.length - 1} />;
         }
         if (b.t === "act") {
-          // 这一轮已经有思维链时，工具前的中文只是这一步要做什么，不是第二次思考。
-          // 没有思维链（chat 模型）时，这句话就是这一轮唯一的思考。
-          if (blocks[i - 1]?.t === "think") {
-            return <p key={i} className="react-act">{b.node.text}</p>;
-          }
-          return <ThinkCard key={i} text={b.node.text} live={i === blocks.length - 1} />;
+          return <p key={i} className="react-act">{b.node.text}</p>;
         }
         if (b.t === "answer") {
           return (

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from .. import llm
-from ..config import MAX_STEPS, PLAN_STEPS, RESULT_ROWS
+from ..config import MAX_STEPS, PLAN_STEPS, RESULT_ROWS, SQL_IDLE_NUDGE, SQL_IDLE_STOP
 from ..schemas import Evidence, SubResult
 from ..tools import sql_tool
 from ..tools.batch import classify, formula_of, label, plan_hit, run_readonly, schema_hit
@@ -17,9 +17,10 @@ _PLAN_ASK = """先制定计划，不要写 SQL，不要调用工具，不要写�
 ```plan
 {"steps":[{"n":1,"action":"一句完整中文，写清查什么、口径、时间或范围"}]}
 ```
-需要几步就写几步，最多 """ + str(PLAN_STEPS) + """ 步。每步只写一条即将执行的取数：指标、维度、时间或范围。不要把 resolve_certified_metric、read_sql_plan、describe_schema、read_entity 写成计划步骤。已知事实里已经有的总量不要再聚合，把步骤用在本技能的下钻。要放弃还没执行的步骤，单独输出一个 steps 为空数组的 ```plan。"""
+需要几步就写几步，最多 """ + str(PLAN_STEPS) + """ 步。每步只写一条即将执行的取数：指标、维度、时间或范围。不要把 resolve_certified_metric、read_sql_plan、describe_schema、read_entity 写成计划步骤。计划只保留这个问题要回答的取数，技能里和本题无关的下钻不要写进去。指标用问题点名的那个，技能里的销售额、毛利额只是例子。已知事实里已经有的总量不要再聚合。要放弃还没执行的步骤，单独输出一个 steps 为空数组的 ```plan。"""
 
 _TRUNCATED = "达到 step 上限，结论不完整（已中止，不伪造完成）。"
+_STALLED = "连续多轮没有新的查询结果，已停止该专家，不伪造结论。"
 
 
 def _plan_steps(content: str) -> list[dict] | None:
@@ -51,6 +52,77 @@ def _parse_plan(content: str) -> list[dict]:
 
 def _renumber(steps: list[dict]) -> list[dict]:
     return [{"n": i + 1, "action": s["action"]} for i, s in enumerate(steps[:PLAN_STEPS])]
+
+
+def _norm_action(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip())
+
+
+def _join_actions(steps: list[dict]) -> str:
+    return "；".join(s["action"] for s in steps) or "（没有未执行步骤）"
+
+
+_CONCLUSION_ASK = (
+    "计划中的取数都已完成。根据这些真实结果输出 ```conclusion。"
+    "先写支撑判断，末尾用「## 该专家的主要结论」给出判断。"
+    "多项数字对照时，可以用 Markdown 表格，也可以写成句子，由你判断哪种更好读，不必每次都画表。"
+    "不要写「分析已完成」「没有剩余步骤」这类执行状态，也不要再追加计划步骤。"
+)
+
+
+def _exec_note(plan, index, before, ontology_enabled, metric_ready, plan_ready, schema_ready, evidences) -> str:
+    """口径已经齐、这一轮又没有新 SQL 时，告诉模型下一回复直接查当前步骤。"""
+    if evidences and index >= len(plan):
+        return ""
+    ready = (metric_ready and plan_ready) if ontology_enabled else schema_ready
+    if ready and index == before and index < len(plan):
+        return "口径和规划已经成功。下一回复只调用 run_sql，执行这一步：" + plan[index]["action"] + "。不要再读本体，不要改计划。"
+    return ""
+
+
+def _stop_if_idle(stall, index, messages) -> bool:
+    mark = stall(index)
+    if mark == "stop":
+        return True
+    if mark:
+        messages.append({"role": "user", "content": mark})
+    return False
+
+
+def _revise_plan(plan: list[dict], index: int, fresh: list[dict], cap: int) -> tuple[list[dict], str]:
+    """用新步骤替换尚未执行的尾巴。已完成步骤不重新排队，总步数不超过第一次计划。"""
+    done = plan[:index]
+    pending = plan[index:]
+    if not fresh:
+        new_plan = _renumber(done)
+        if not new_plan[index:]:
+            return new_plan, _CONCLUSION_ASK
+        return new_plan, "计划已修订。尚未执行的步骤：" + _join_actions(new_plan[index:])
+
+    seen = {_norm_action(s["action"]) for s in done}
+    novel: list[dict] = []
+    for step in fresh:
+        key = _norm_action(step["action"])
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        novel.append(step)
+    if not pending:
+        return plan, _CONCLUSION_ASK
+    pending_keys = [_norm_action(s["action"]) for s in pending]
+    novel_keys = [_norm_action(s["action"]) for s in novel]
+    if not novel or novel_keys == pending_keys:
+        if not novel:
+            return plan, "这些步骤已经完成，计划不改。尚未执行的步骤：" + _join_actions(pending)
+        return plan, "计划没有变化。请继续执行尚未完成的步骤：" + _join_actions(pending)
+    room = max(cap - len(done), 0)
+    if len(novel) > room:
+        return plan, "计划不能加长，未执行步骤仍是原来那几条：" + _join_actions(pending)
+    new_plan = _renumber(done + novel)
+    new_pending = new_plan[len(done):]
+    if not new_pending:
+        return new_plan, _CONCLUSION_ASK
+    return new_plan, "计划已修订。尚未执行的步骤：" + _join_actions(new_pending)
 
 
 async def run_plan_execute(
@@ -92,6 +164,7 @@ async def run_plan_execute(
     ]
     usage = {"prompt": 0, "completion": 0, "total": 0}
     plan: list[dict] = []
+    plan_cap = 0
     phase = "plan"
     index = 0
     evidences: list[Evidence] = []
@@ -100,6 +173,31 @@ async def run_plan_execute(
     plan_ready = False
     schema_ready = False
     formula = ""
+    idle = 0
+    progress_at = 0
+
+    def stall(at: int) -> str | None:
+        nonlocal idle, progress_at
+        if at > progress_at:
+            progress_at = at
+            idle = 0
+            return None
+        idle += 1
+        if idle >= SQL_IDLE_STOP:
+            return "stop"
+        if idle != SQL_IDLE_NUDGE:
+            return None
+        action = plan[at]["action"] if at < len(plan) else "当前计划"
+        ready = (metric_ready and plan_ready) if ontology_enabled else schema_ready
+        if ready:
+            return "口径和规划已经有了。下一回复只调用 run_sql，执行这一步：" + action + "。不要再读本体，不要改计划。"
+        return "下一回复先取得这一步的口径和规划，拿到之后立刻写 SQL。不要重复阅读已经返回过的内容。"
+
+    def stalled():
+        return SubResult(
+            skill_id=skill_id, skill_name=skill_name, conclusion=_STALLED,
+            evidences=evidences, status="truncated",
+        ), usage
 
     for step in range(1, MAX_STEPS + 1):
         await emit({
@@ -120,17 +218,19 @@ async def run_plan_execute(
                 messages.append({"role": "user", "content": "没有解析到 ```plan JSON。请只输出计划，不要写 SQL，不要调用工具。"})
                 continue
             plan = parsed
+            plan_cap = len(plan)
             await emit({"type": "worker_plan", "skill_id": skill_id, "thought": "", "steps": plan})
             phase = "exec"
             index = 0
             messages.append({
                 "role": "user",
-                "content": "计划已记录。现在用函数执行。一次回复最多 4 个函数。写 SQL 前先调用函数取得这一步需要的口径和规划。不要在正文里写工具参数。",
+                "content": "计划已记录。现在用函数执行。一次回复最多 4 个函数。写 SQL 前先调用函数取得这一步需要的口径和规划。口径和规划已经成功之后，下一回复就调用 run_sql，不要再重复阅读本体。不要在正文里写工具参数。",
             })
             continue
 
         has_plan = "```plan" in content.lower()
         tools = calls_to_pending(tool_calls)
+        before = index
         if tools and has_plan:
             _metric, plan_ready, schema_ready, formula, index, pieces = await _run_tools(
                 tools, skill_id, emit, cursor, goal, plan, index, evidences,
@@ -139,45 +239,48 @@ async def run_plan_execute(
             metric_ready = _metric
             _append_tool_results(
                 messages, pieces,
-                "同一次回复里既有工具又有新计划。这一轮只处理工具，计划不改。请在看见结果后再单独修订计划。",
+                _exec_note(plan, index, before, ontology_enabled, metric_ready, plan_ready, schema_ready, evidences)
+                or "同一次回复里既有工具又有新计划。这一轮只处理工具，计划不改。请在看见结果后再单独修订计划。",
             )
+            if _stop_if_idle(stall, index, messages):
+                return stalled()
             continue
         if tools:
             metric_ready, plan_ready, schema_ready, formula, index, pieces = await _run_tools(
                 tools, skill_id, emit, cursor, goal, plan, index, evidences,
                 ontology_enabled, metric_ready, plan_ready, schema_ready, formula,
             )
-            extra = ""
-            if evidences and index >= len(plan):
-                extra = "计划中的取数都已完成。根据这些真实结果输出 ```conclusion。末尾用「## 该专家的主要结论」给出一句话。"
+            extra = _CONCLUSION_ASK if evidences and index >= len(plan) else _exec_note(
+                plan, index, before, ontology_enabled, metric_ready, plan_ready, schema_ready, evidences,
+            )
             _append_tool_results(messages, pieces, extra)
+            if _stop_if_idle(stall, index, messages):
+                return stalled()
             continue
         if has_plan:
             fresh = _plan_steps(content)
             if fresh is None:
                 messages.append({"role": "user", "content": "没有解析到新的 ```plan。未执行步骤保持不变。"})
-                continue
-            done = plan[:index]
-            plan = _renumber(done + fresh)
-            await emit({"type": "worker_plan", "skill_id": skill_id, "thought": "", "steps": plan})
-            pending = "；".join(s["action"] for s in plan[index:]) or "（没有未执行步骤）"
-            messages.append({"role": "user", "content": "计划已修订。尚未执行的步骤：" + pending})
+            else:
+                plan, note = _revise_plan(plan, index, fresh, plan_cap)
+                await emit({"type": "worker_plan", "skill_id": skill_id, "thought": "", "steps": plan})
+                messages.append({"role": "user", "content": note})
+            if _stop_if_idle(stall, index, messages):
+                return stalled()
             continue
         concl = _extract_block(content, "conclusion")
         if concl and evidences:
-            if index < len(plan):
-                pending = "；".join(s["action"] for s in plan[index:])
-                messages.append({
-                    "role": "user",
-                    "content": "还有未执行步骤：" + pending + "。先完成这些取数，或单独用 ```plan {\"steps\":[]} 放弃剩余步骤，然后再写 ```conclusion。",
-                })
-                continue
             conclusion = concl
             break
-        messages.append({
-            "role": "user",
-            "content": "这一步需要调用函数，或在看见结果后单独用 ```plan 修订未执行步骤，或在已有 SQL 结果后输出 ```conclusion。一次最多 4 个函数。不要在正文里写工具参数。",
-        })
+        ready = (metric_ready and plan_ready) if ontology_enabled else schema_ready
+        action = plan[index]["action"] if index < len(plan) else ""
+        if ready and action:
+            nudge = "口径和规划已经成功。下一回复只调用 run_sql，执行这一步：" + action + "。不要再读本体，不要改计划。"
+        else:
+            nudge = "这一步需要调用函数，或在看见结果后单独用 ```plan 修订未执行步骤，或在已有 SQL 结果后输出 ```conclusion。一次最多 4 个函数。不要在正文里写工具参数。"
+        messages.append({"role": "user", "content": nudge})
+        if _stop_if_idle(stall, index, messages):
+            return stalled()
 
     else:
         conclusion = conclusion or _TRUNCATED

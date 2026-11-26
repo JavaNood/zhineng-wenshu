@@ -16,13 +16,43 @@ export async function fetchModels(): Promise<ModelInfo> {
   return r.json();
 }
 
-export async function startChat(question: string, model: string, ontologyEnabled = true): Promise<ChatStart> {
+export async function startChat(
+  question: string,
+  model: string,
+  ontologyEnabled = true,
+  sessionId?: string,
+): Promise<ChatStart> {
   const r = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question, model, ontology_enabled: ontologyEnabled }),
+    body: JSON.stringify({
+      question,
+      model,
+      ontology_enabled: ontologyEnabled,
+      session_id: sessionId || undefined,
+    }),
   });
-  return r.json();
+  const data = await r.json();
+  if (!r.ok) {
+    throw new Error(data.error || "无法开始对话");
+  }
+  return data;
+}
+
+export async function postReply(
+  sessionId: string,
+  body: { card: string; action: string; selected: string[]; text: string },
+): Promise<{ accepted: boolean; done?: boolean; error?: string }> {
+  const r = await fetch(`/api/session/${sessionId}/reply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await r.json();
+  if (!r.ok) {
+    throw new Error(data.error || "无法提交");
+  }
+  return data;
 }
 
 export type EventHandler = (ev: any) => void;

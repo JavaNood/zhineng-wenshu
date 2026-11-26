@@ -23,7 +23,12 @@ function AgentCell({
   const plan = agent.plan || [];
   const stepDone = (n: number, action: string) =>
     sqlSteps.some((s) => s.step === n || (s.action && s.action === action));
-  const doneCount = plan.filter((p) => stepDone(p.n, p.action)).length;
+  const finished = agent.status === "done";
+  const executed = plan.filter((p) => stepDone(p.n, p.action));
+  const fallback = sqlSteps.map((s, i) => ({ n: s.step || i + 1, action: s.action || "" }));
+  const visible = finished ? (executed.length ? executed : fallback) : (plan.length ? plan : fallback);
+  const doneCount = finished ? visible.length : executed.length;
+  const total = finished ? visible.length : (plan.length || sqlSteps.length);
   const meta = STATUS_META[agent.status] || STATUS_META.waiting;
   // 该专家自己的取数工具调用（主链之外）
   const myRuns = trace.filter((t) => t.kind === "tool" && t.skill_id === agent.skill_id && t.tool === "run_sql");
@@ -56,20 +61,23 @@ function AgentCell({
           </div>
         )}
 
-        {(agent.plan?.length || sqlSteps.length > 0) && (
+        {visible.length > 0 && (
           <div className="cell-thinkbox">
             <button type="button" className="cell-think-toggle" onClick={() => setShowThink((s) => !s)}>
               <span className="cell-think-arrow">{showThink ? "▼" : "▶"}</span>
-              计划 {plan.length ? doneCount : sqlSteps.length}/{plan.length || sqlSteps.length}
+              计划 {doneCount}/{total}
             </button>
             {showThink && (
               <div className="cell-thinkbody">
-                {(plan.length ? plan : sqlSteps.map((s, i) => ({ n: s.step || i + 1, action: s.action || "" }))).map((p) => (
-                  <div key={p.n + p.action} className="cell-steprow kind-sql">
-                    <span className="cell-stepmark">{stepDone(p.n, p.action) ? "⚙️" : "○"}</span>
-                    <span className="cell-steptext">{p.action}</span>
-                  </div>
-                ))}
+                {visible.map((p) => {
+                  const done = finished || stepDone(p.n, p.action);
+                  return (
+                    <div key={p.n + p.action} className="cell-steprow kind-sql">
+                      <span className="cell-stepmark">{done ? "⚙️" : "○"}</span>
+                      <span className="cell-steptext">{p.action}</span>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

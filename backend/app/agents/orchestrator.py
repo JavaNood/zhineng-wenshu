@@ -78,11 +78,11 @@ def build_groups(points: list[IntentPoint], question: str) -> list[dict]:
     return groups
 
 
-def _initial(question: str, model: str, ontology_enabled: bool = True) -> OrchestratorState:
+def _initial(question: str, model: str, ontology_enabled: bool = True, session_id: str | None = None) -> OrchestratorState:
     return {
         "question": question,
         "model": model,
-        "messages": initial_messages(question, ontology_enabled),
+        "messages": initial_messages(question, ontology_enabled, session_id),
         "step": 0,
         "route": "",
         "pending": [],
@@ -143,9 +143,12 @@ def after_tools(state: OrchestratorState):
 
 async def worker_node(state: dict, runtime: Runtime) -> dict:
     emit = runtime.context["emit"]
+    session = runtime.context["session"]
+    session_id = getattr(session, "session_id", None)
     sid = state["skill_id"]
     try:
-        sname = next((s["name"] for s in skilllib.list_skills() if s["id"] == sid), sid)
+        card = skilllib.get_skill(sid, session_id) or {}
+        sname = card.get("title") or sid
         await emit({"type": "agent_start", "skill_id": sid, "skill_name": sname})
         cursor = sql_tool.new_cursor()
         sub, usage = await executors.run_skill_worker(
@@ -153,8 +156,10 @@ async def worker_node(state: dict, runtime: Runtime) -> dict:
             known_facts=state.get("known_facts_text") or "",
             ontology_enabled=bool(state.get("ontology_enabled", True)),
             context=runtime.context,
+            session_id=session_id,
         )
         packet = {"sub": sub.to_dict(), "usage": usage, "ord": state.get("ord", 0)}
+        await emit({"type": "sub_done", "sub": packet["sub"]})
         return {"worker_packets": [packet]}
     except Exception as res:
         sub = {
@@ -165,11 +170,11 @@ async def worker_node(state: dict, runtime: Runtime) -> dict:
             "note": "已隔离，不影响其他专家",
             "evidences": [],
         }
+        await emit({"type": "sub_done", "sub": sub})
         return {"worker_packets": [{"sub": sub, "usage": {}, "ord": state.get("ord", 0)}]}
 
 
 async def collect_workers(state: OrchestratorState, runtime: Runtime) -> dict:
-    emit = runtime.context["emit"]
     session = runtime.context["session"]
     start = state.get("packet_cursor") or 0
     batch = sorted(state["worker_packets"][start:], key=lambda p: p.get("ord", 0))
@@ -177,7 +182,6 @@ async def collect_workers(state: OrchestratorState, runtime: Runtime) -> dict:
     for pkt in batch:
         session.add_tokens(pkt.get("usage") or {})
         session.add_sub_result(pkt["sub"])
-        await emit({"type": "sub_done", "sub": pkt["sub"]})
         subs.append(pkt["sub"])
     messages = list(state["messages"]) + [{
         "role": "user",
@@ -191,7 +195,10 @@ async def collect_workers(state: OrchestratorState, runtime: Runtime) -> dict:
 
 async def finish_node(state: OrchestratorState, runtime: Runtime) -> dict:
     del state
-    await runtime.context["emit"]({"type": "tokens", "tokens": runtime.context["session"].tokens})
+    await runtime.context["emit"]({
+        "type": "tokens",
+        "tokens": runtime.context["session"].turn_tokens,
+    })
     return {}
 
 
@@ -222,7 +229,7 @@ OUTER_RECURSION_LIMIT = 200
 async def orchestrate(question: str, model: str, emit, session) -> None:
     enabled = bool(getattr(session, "ontology_enabled", True))
     await GRAPH.ainvoke(
-        _initial(question, model, enabled),
+        _initial(question, model, enabled, getattr(session, "session_id", None)),
         context={"emit": emit, "session": session},
         config={
             "max_concurrency": MAX_PARALLEL,

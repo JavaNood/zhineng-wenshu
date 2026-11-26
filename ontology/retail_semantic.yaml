@@ -21,6 +21,7 @@ metrics:
   - code: sales_amount
     name: 销售额
     synonyms: [销售额, 营收, 成交额, 收入, 营业额]
+    source: fact_订单
     expression: "SUM(实付金额) - SUM(退款金额)"
     additivity: additive
     filter_expr: null
@@ -30,6 +31,7 @@ metrics:
   - code: order_count
     name: 订单量
     synonyms: [订单数, 单量, 成交订单数, 订单笔数]
+    source: fact_订单
     expression: "COUNT(DISTINCT 订单ID)"
     additivity: additive
     filter_expr: null
@@ -39,6 +41,7 @@ metrics:
   - code: gross_profit
     name: 毛利额
     synonyms: [毛利, 毛利总额]
+    source: fact_订单
     expression: "SUM(毛利额)"
     additivity: additive
     filter_expr: null
@@ -48,6 +51,7 @@ metrics:
   - code: discount_amount
     name: 折扣金额
     synonyms: [优惠金额, 让利]
+    source: fact_订单
     expression: "SUM(折扣金额)"
     additivity: additive
     filter_expr: null
@@ -89,6 +93,7 @@ metric_formulas:
 # ============== 数据集与字段 ==============
 datasets:
   - source: fact_订单
+    sql: orders
     file: fact_订单.csv
     grain: 一行一个订单（50000 行）
     description: 订单级交易事实表
@@ -111,6 +116,7 @@ datasets:
       - {name: 是否新客首单, type: varchar, desc: 是/否，客户首单标记}
 
   - source: fact_订单明细
+    sql: items
     file: fact_订单明细.csv
     grain: 一行一个订单商品行（87635 行）
     description: 订单商品明细表，用于类目结构/商品贡献分析
@@ -126,6 +132,7 @@ datasets:
       - {name: 毛利额, type: double, desc: 明细行毛利}
 
   - source: fact_月度目标
+    sql: target
     file: fact_月度目标.csv
     grain: 一行一个门店一个月的目标（1368 行）
     description: 门店月度目标表，达成率分母来源
@@ -137,6 +144,7 @@ datasets:
       - {name: 订单量目标, type: double, desc: 月度订单量目标}
 
   - source: dim_日期
+    sql: d_date
     file: dim_日期.csv
     grain: 一行一天（1096 天，2023-01-01~2025-12-31）
     description: 日期维度
@@ -153,6 +161,7 @@ datasets:
       - {name: 促销标记, type: varchar, desc: 日常/大促/会员日}
 
   - source: dim_客户
+    sql: d_cust
     file: dim_客户.csv
     grain: 一行一个客户（8000 行）
     description: 客户维度
@@ -166,6 +175,7 @@ datasets:
       - {name: 是否企业客户, type: varchar, desc: 是/否}
 
   - source: dim_门店
+    sql: d_store
     file: dim_门店.csv
     grain: 一行一个门店（38 家）
     description: 门店维度
@@ -179,6 +189,7 @@ datasets:
       - {name: 开业日期, type: date, desc: 开业日期}
 
   - source: dim_商品
+    sql: d_prod
     file: dim_商品.csv
     grain: 一行一个商品（108 个）
     description: 商品维度

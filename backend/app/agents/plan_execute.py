@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from .. import llm
-from ..config import MAX_STEPS
+from ..config import MAX_STEPS, PLAN_STEPS, RESULT_ROWS
 from ..ontology import loader as onto
 from ..schemas import Evidence, SubResult
 from ..tools import skill_tools, sql_tool
@@ -16,7 +16,7 @@ _PLAN_ASK = """先制定计划，不要写 SQL，不要写结论。
 ```plan
 {"steps":[{"n":1,"action":"一句完整中文，写清查什么、口径、时间或范围"}]}
 ```
-写 2 到 5 步。每步只做一件取数。已知事实里已经有的总量不要再聚合，把步骤用在本技能的下钻。"""
+需要几步就写几步，最多 """ + str(PLAN_STEPS) + """ 步。每步只做一件取数。已知事实里已经有的总量不要再聚合，把步骤用在本技能的下钻。"""
 
 _TRUNCATED = "达到 step 上限，结论不完整（已中止，不伪造完成）。"
 
@@ -38,7 +38,7 @@ def _parse_plan(content: str) -> list[dict]:
         if len(action) < 4:
             continue
         steps.append({"n": len(steps) + 1, "action": action})
-        if len(steps) >= 5:
+        if len(steps) >= PLAN_STEPS:
             break
     return steps
 
@@ -90,7 +90,7 @@ async def run_plan_execute(
     await emit({"type": "agent_prompt", "skill_id": skill_id, "prompt": prompt_text})
 
     messages = [
-        {"role": "system", "content": WORKER_SYS.format(data_map=sql_tool.data_map_text())},
+        {"role": "system", "content": WORKER_SYS},
         {"role": "user", "content": context + "\n\n" + _PLAN_ASK},
     ]
     usage = {"prompt": 0, "completion": 0, "total": 0}
@@ -153,7 +153,7 @@ async def run_plan_execute(
                 })
                 continue
             action = plan[index]["action"]
-            ev = Evidence(metric=goal, sql=res["sql"], row_count=res["row_count"], rows=res["rows"][:50])
+            ev = Evidence(metric=goal, sql=res["sql"], row_count=res["row_count"], rows=res["rows"][:RESULT_ROWS])
             evidences.append(ev)
             await emit({
                 "type": "step_log",
@@ -172,7 +172,7 @@ async def run_plan_execute(
                 "detail": f"返回 {res['row_count']} 行",
                 "sql": res["sql"],
             })
-            preview = _rows_preview(res["rows"][:10])
+            preview = _rows_preview(res["rows"][:RESULT_ROWS], res["row_count"])
             index += 1
             if index < len(plan):
                 messages.append({

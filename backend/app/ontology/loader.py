@@ -86,8 +86,9 @@ def read_ontology(topic: str = "") -> dict:
     hits = [m for m in _all_metrics(ont)
             if m["name"] in topic or m.get("code") in topic
             or any(s in topic for s in m.get("synonyms", []))]
-    # 表命中
-    tables = [ds for ds in ont.get("datasets", []) if ds["source"] in topic]
+    # 表：参数里写了表名，或命中指标的 source 指向这张表
+    sources = {m.get("source") for m in hits if m.get("source")}
+    tables = [ds for ds in ont.get("datasets", []) if ds["source"] in topic or ds["source"] in sources]
     # 维度命中
     dims = [d for d in ont.get("dimensions", [])
             if d["code"] in topic or d["name"] in topic]

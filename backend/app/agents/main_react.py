@@ -8,7 +8,7 @@ import re
 from langgraph.runtime import Runtime
 
 from .. import llm
-from ..config import MAX_SUB_AGENTS
+from ..config import MAX_SUB_AGENTS, RESULT_ROWS
 from ..schemas import Evidence, FinalResult
 from ..skills import loader as skilllib
 from ..tools import ontology_tools, skill_tools, sql_tool
@@ -30,7 +30,7 @@ MAIN_SYS = """你是智能问数的主 Agent，用 ReAct 推进：观察已经�
 - {"tool":"read_ontology","metric":"指标名"}
   阅读本体里的指标口径、表字段和允许关联。任何 SQL 之前必须先调用。
 - {"tool":"run_sql","sql":"一条 DuckDB 只读 SELECT"}
-  表用英文别名，列用中文原名。多个时间、多个指标用一条 SQL 取回。没读过本体不要调用。
+  FROM/JOIN 用本体里的 sql 字段，不要用 source。列用中文原名。多个时间、多个指标用一条 SQL 取回。没读过本体不要调用。
 - {"tool":"report","text":"给用户看的数值答案"}
   已经有 SQL 结果、需要先把数值告诉用户时调用。text 里的数字只能来自工具返回。
 - {"tool":"list_skills"}
@@ -41,6 +41,7 @@ MAIN_SYS = """你是智能问数的主 Agent，用 ReAct 推进：观察已经�
   结束这轮对话。寒暄、与数据无关的问题直接 finish，不要查数。
   只问了数值并且已经 report 过，可以 finish，summary 用已经报告的数值。
   派过专家之后，必须等专家结论返回再 finish：至少两个专家共同指向的写进 consensus，互相冲突的写进 divergences，没有冲突就给空数组。不要编造专家没说过的判断。
+  未覆盖、证据不足、某步没取成，不要写进 summary、consensus、divergences。
 
 禁止编造数字和指标口径。一轮一个工具。"""
 
@@ -78,7 +79,6 @@ def ontology_payload(metric: str) -> str:
     parts = [ontology_tools.read_ontology(metric)]
     if metric:
         parts.append(ontology_tools.resolve_metric(metric))
-    parts.append(sql_tool.data_map_text())
     return "\n\n".join(parts)
 
 
@@ -95,7 +95,7 @@ def _add_usage(state_usage_ignored, resp_usage: dict, session) -> None:
 
 
 async def main_turn(state: dict, runtime: Runtime) -> dict:
-    """一轮模型调用：先记下它要给用户看的那一两句，再记下思维链，最后只解析一个工具。"""
+    """一轮模型调用：思维链和工具前的句子随 token 推送，结束后再解析一个工具。"""
     emit = runtime.context["emit"]
     session = runtime.context["session"]
     step = int(state.get("step") or 0) + 1
@@ -103,22 +103,51 @@ async def main_turn(state: dict, runtime: Runtime) -> dict:
         await emit({"type": "error", "message": "主 Agent 达到步数上限，已停止。"})
         return {"step": step, "route": "stop"}
 
-    buf: list[str] = []
+    held = ""
+    closed = False
+    streamed_act = False
 
-    async def _hold(text: str) -> None:
-        buf.append(text)
+    async def _on_reasoning(text: str) -> None:
+        if not text:
+            return
+        await emit({"type": "reasoning", "skill_id": "main", "text": text})
 
-    resp = await llm.chat_stream(state["messages"], model=state["model"], on_reasoning=_hold)
+    async def _on_content(text: str) -> None:
+        """工具块之前的句子边生成边推。``` 之后是工具 JSON，不再展示。"""
+        nonlocal held, closed, streamed_act
+        if closed or not text:
+            return
+        chunk = held + text
+        cut = chunk.find("```")
+        if cut >= 0:
+            show = chunk[:cut]
+            held = ""
+            closed = True
+            if show:
+                streamed_act = True
+                await emit({"type": "act", "skill_id": "main", "text": show})
+            return
+        if len(chunk) <= 2:
+            held = chunk
+            return
+        show, held = chunk[:-2], chunk[-2:]
+        streamed_act = True
+        await emit({"type": "act", "skill_id": "main", "text": show})
+
+    resp = await llm.chat_stream(
+        state["messages"], model=state["model"],
+        on_reasoning=_on_reasoning, on_content=_on_content,
+    )
     _add_usage(None, resp.get("usage") or {}, session)
     content = resp.get("content") or ""
     messages = list(state["messages"]) + [{"role": "assistant", "content": content}]
+    if not closed and held.strip():
+        streamed_act = True
+        await emit({"type": "act", "skill_id": "main", "text": held})
     preface = _preface(content)
-    reasoning = "".join(buf).strip()
-    # 先展示这一步要做什么，再展开思维链，避免一上来就是一整段推理。
-    if preface:
+    # 测试桩不走 on_content。真实流式已经推过的，不再整段补发。
+    if preface and not streamed_act:
         await emit({"type": "act", "skill_id": "main", "text": preface})
-    if reasoning:
-        await emit({"type": "reasoning", "skill_id": "main", "text": reasoning})
 
     tool = parse_tool(content) or {}
     name = str(tool.get("tool") or "").strip()
@@ -213,17 +242,23 @@ async def _emit_finish(state, tool, preface, content, emit, session) -> None:
         await emit({"type": "query_answer", "text": summary, "evidences": evidences})
 
 
+_REAL_TOOLS = {"read_ontology", "run_sql", "report", "list_skills", "dispatch", "finish"}
+
+
 async def nudge_node(state: dict, runtime: Runtime) -> dict:
     emit = runtime.context["emit"]
     note = state.get("nudge") or "请换一个工具。"
     pending = state.get("pending") or {}
-    await emit({
-        "type": "tool_call",
-        "skill_id": "main",
-        "tool": str(pending.get("tool") or "tool"),
-        "title": str(pending.get("tool") or "tool"),
-        "detail": note,
-    })
+    name = str(pending.get("tool") or "").strip()
+    # 没解析出工具时，这句话只回给模型重试，界面上不先画一个工具。
+    if name in _REAL_TOOLS:
+        await emit({
+            "type": "tool_call",
+            "skill_id": "main",
+            "tool": name,
+            "title": name,
+            "detail": note,
+        })
     messages = list(state["messages"]) + [{"role": "user", "content": note}]
     return {"messages": messages}
 
@@ -277,9 +312,10 @@ async def sql_node(state: dict, runtime: Runtime) -> dict:
         flag = {}
     else:
         detail = f"返回 {res['row_count']} 行"
-        preview = f"结果（{res['row_count']} 行）：\n{_rows_preview(res['rows'][:10])}"
+        shown = res["rows"][:RESULT_ROWS]
+        preview = f"结果（{res['row_count']} 行）：\n{_rows_preview(shown, res['row_count'])}"
         ev = Evidence(metric=state.get("question") or "", sql=res["sql"],
-                      row_count=res["row_count"], rows=res["rows"][:50])
+                      row_count=res["row_count"], rows=shown)
         flag = {"has_sql": True, "evidences": [ev.to_dict()]}
     await emit({
         "type": "tool_call",
@@ -326,5 +362,6 @@ def dispatch_observation(subs: list[dict]) -> str:
     return (
         "工具 dispatch 的返回：\n"
         + blocks
-        + "\n这些是专家刚刚返回的结论。下一步调用 finish，根据这些结论写 summary、consensus、divergences。"
+        + "\n这些是专家刚刚返回的结论。下一步调用 finish，根据这些结论写 summary、consensus、divergences。\n"
+        "divergences 只写专家结论互相冲突的地方。未覆盖或证据不足不要写。"
     )

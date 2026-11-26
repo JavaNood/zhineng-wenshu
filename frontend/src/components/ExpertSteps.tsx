@@ -5,6 +5,19 @@ const STATUS_LABEL: Record<string, string> = {
   waiting: "等待派发", running: "分析中", done: "完成", error: "错误", truncated: "超限中止",
 };
 
+function SqlFold({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  if (!text) return null;
+  return (
+    <div>
+      <button type="button" className="trace-sql-toggle" onClick={() => setOpen((o) => !o)}>
+        {open ? "收起 SQL" : "查看 SQL"}
+      </button>
+      {open && <pre className="step-sql">{text}</pre>}
+    </div>
+  );
+}
+
 function Thought({ text }: { text?: string }) {
   const [open, setOpen] = useState(false);
   if (!text) return null;
@@ -45,7 +58,7 @@ function ExpertBlock({ agent, steps }: { agent: AgentCard; steps: StepLog[] }) {
                 {done && (
                   <div className="step-detail">
                     <Thought text={done.thought} />
-                    <pre className="step-sql">{done.text}</pre>
+                    <SqlFold text={done.text} />
                   </div>
                 )}
               </li>

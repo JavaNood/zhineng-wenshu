@@ -12,10 +12,37 @@ PORT=8000
 LOG_DIR="$ROOT/runtime"
 mkdir -p "$LOG_DIR"
 
+# 本机不一定把 node 放在 PATH 里。已安装的前端依赖在 frontend/node_modules，构建不需要 npm。
+find_node() {
+  if command -v node >/dev/null 2>&1; then
+    command -v node
+    return
+  fi
+  local candidates=(
+    "/Applications/Cursor.app/Contents/Resources/app/resources/helpers/node"
+    "/usr/local/bin/node"
+    "/opt/homebrew/bin/node"
+  )
+  local c
+  for c in "${candidates[@]}"; do
+    if [[ -x "$c" ]]; then
+      echo "$c"
+      return
+    fi
+  done
+  return 1
+}
+
 # 可选：重新构建前端（dist 由后端静态托管，单端口 8000 对外）
 if [[ "${1:-}" == "--build" ]]; then
   echo "==> 构建前端 dist ..."
-  npm --prefix frontend run build
+  NODE_BIN="$(find_node)" || { echo "找不到 node，无法构建前端。"; exit 1; }
+  export PATH="$(dirname "$NODE_BIN"):$PATH"
+  if [[ ! -x frontend/node_modules/.bin/tsc || ! -x frontend/node_modules/.bin/vite ]]; then
+    echo "frontend/node_modules 不完整，无法构建。"
+    exit 1
+  fi
+  (cd frontend && ./node_modules/.bin/tsc -b && ./node_modules/.bin/vite build)
 fi
 
 # 清理旧的后端 / 隧道进程

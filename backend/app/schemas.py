@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from .config import RESULT_ROWS
+
 
 @dataclass
 class PlanStep:
@@ -46,7 +48,7 @@ class Evidence:
             "sql": self.sql,
             "window": self.window,
             "row_count": self.row_count,
-            "rows": self.rows[:50],  # 前端回看只保留前 50 行
+            "rows": self.rows[:RESULT_ROWS],
         }
 
 

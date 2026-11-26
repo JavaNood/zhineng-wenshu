@@ -58,11 +58,15 @@ def _action_before_sql(text: str, sql: str | None = None) -> str | None:
     return None
 
 
-def _rows_preview(rows: list[dict]) -> str:
+def _rows_preview(rows: list[dict], total: int | None = None) -> str:
     if not rows:
         return "(空结果)"
     cols = list(rows[0].keys())
     out = [" | ".join(cols)]
     for r in rows:
         out.append(" | ".join(str(r.get(c, "")) for c in cols))
-    return "\n".join(out)
+    text = "\n".join(out)
+    n = len(rows) if total is None else total
+    if n > len(rows):
+        text += f"\n共 {n} 行，这里展示前 {len(rows)} 行，还有 {n - len(rows)} 行没有展示。"
+    return text

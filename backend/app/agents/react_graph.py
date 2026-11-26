@@ -9,7 +9,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 
 from .. import llm
-from ..config import MAX_STEPS
+from ..config import MAX_STEPS, RESULT_ROWS
 from ..schemas import Evidence
 from ..tools import sql_tool
 from .runtime import GraphContext, current_cursor
@@ -19,28 +19,24 @@ from .textutil import _action_before_sql, _extract_block, _extract_sql, _model_l
 # 提示词正文不改，只是随 ReAct 子图从 supervisor / worker 挪到这里。
 QUERY_SYS = """你是问数执行 Agent，根据目标查询标准指标。
 【工作方式】
-1. 先看下方"数据表与字段"确定表别名、列名与允许 join，禁止用 information_schema 盲探表结构。
-2. 需要取数时输出一条 ```sql（DuckDB 只读，表用英文别名，列名用中文原名）。
-3. 目标含多个时间期（如2025与2024、各季度）、多个指标或多个维度取值时，用一条 SQL 一次取回（按年/季 GROUP BY、或 CASE 对比），不要为每期/每值各跑一次。
-4. 拿到真实结果后再输出 ```conclusion：给出具体数值答案，注明口径与时间窗口；多期/多值要分别列出并给出对比。
+1. 需要取数时输出一条 ```sql（DuckDB 只读，表用英文别名，列名用中文原名）。
+2. 目标含多个时间期（如2025与2024、各季度）、多个指标或多个维度取值时，用一条 SQL 一次取回（按年/季 GROUP BY、或 CASE 对比），不要为每期/每值各跑一次。
+3. 拿到真实结果后再输出 ```conclusion：给出具体数值答案，注明口径与时间窗口；多期/多值要分别列出并给出对比。
 【硬约束】
 - 未成功执行过任何 SQL、没有真实结果前，禁止输出 ```conclusion，禁止只复述口径或给"见查询结果"这类空话。
 - 只用本体标准指标口径，禁止编造数字；金额=SUM(实付金额)-SUM(退款金额)，订单量=COUNT(DISTINCT 订单ID)。
 - 只回答本查询点的数值事实；不要评价"数据不足/无法定位原因"，不要建议下钻、渠道拆分或进一步分析，归因由主 Agent 另行调度。
-- 时间过滤：orders.订单日期 可直接按年/季过滤；需要促销标记/标准年月时再 join d_date。
-表别名与数据地图：{data_map}"""
+- 时间过滤：orders.订单日期 可直接按年/季过滤；需要促销标记/标准年月时再 join d_date。"""
 
 WORKER_SYS = """你是一位被派遣的分析专家子 Agent，严格按给定 Skill 的操作指引取数分析。
 【工作方式】
-1. 先看下方"数据表与字段"确定表别名、列名与允许 join，禁止用 information_schema 盲探表结构。
-2. 每一步只做一件事：需要取数时输出一条 DuckDB 只读 SQL（```sql 代码块），表用英文别名，列用中文原名；输出 SQL 前先用一句完整、明确的中文写明本步动作，格式"步骤N：<明确的查询对象 + 口径 + 时间/范围>"，例如"步骤一：分别统计2024与2025全年销售额并计算同比变化"。必须写清查什么、按什么口径、看哪个范围；禁止半句、禁止未闭合括号的残句、禁止只写"订单量）"这类碎片。
-3. 拿到 SQL 结果后继续下一步；数据不足可修正 SQL 重试（在 step 上限内）。
-4. 全部取数完成后，输出最终结论 ```conclusion 代码块：先用数据给出支撑判断，末尾以"## 该专家的主要结论"作为小标题，给出本视角下的一句话核心结论。
+1. 每一步只做一件事：需要取数时输出一条 DuckDB 只读 SQL（```sql 代码块），表用英文别名，列用中文原名；输出 SQL 前先用一句完整、明确的中文写明本步动作，格式"步骤N：<明确的查询对象 + 口径 + 时间/范围>"，例如"步骤一：分别统计2024与2025全年销售额并计算同比变化"。必须写清查什么、按什么口径、看哪个范围；禁止半句、禁止未闭合括号的残句、禁止只写"订单量）"这类碎片。
+2. 拿到 SQL 结果后继续下一步；数据不足可修正 SQL 重试（在 step 上限内）。
+3. 全部取数完成后，输出最终结论 ```conclusion 代码块：先用数据给出支撑判断，末尾以"## 该专家的主要结论"作为小标题，给出本视角下的一句话核心结论。
 【硬约束】
 - 未成功执行过任何 SQL、没有真实结果前，禁止输出 ```conclusion，禁止只复述口径或空泛判断。
 - 只用下方本体给定的标准指标口径，禁止自造指标或编造数字，结论必须基于真实 SQL 结果。
-- 时间过滤：orders.订单日期 可直接按年/季过滤；需要促销标记/标准年月时再 join d_date。
-数据表与数据地图：{data_map}"""
+- 时间过滤：orders.订单日期 可直接按年/季过滤；需要促销标记/标准年月时再 join d_date。"""
 
 
 class ReactState(TypedDict):
@@ -165,15 +161,16 @@ async def sql_node(state: ReactState, runtime: Runtime) -> dict:
             messages.append({"role": "user",
                              "content": f"SQL 执行报错：{res['error']}。请修正后重试，不要编造结果。"})
         return {"messages": messages}
+    shown = res["rows"][:RESULT_ROWS]
     ev = Evidence(metric=state["goal"], sql=res["sql"], row_count=res["row_count"],
-                  rows=res["rows"][:50])
+                  rows=shown)
     evidences = list(state["evidences"]) + [ev.to_dict()]
     await emit({
         "type": "tool_call", "skill_id": state["skill_id"], "tool": "run_sql",
         "title": (state.get("step_action") or "").strip() or "run_sql",
         "detail": f"返回 {res['row_count']} 行", "sql": res["sql"],
     })
-    preview = _rows_preview(res["rows"][:10])
+    preview = _rows_preview(shown, res["row_count"])
     if state["profile"] == "query":
         messages.append({"role": "user",
                          "content": f"结果（{res['row_count']}行）：\n{preview}\n给 ```conclusion。"})

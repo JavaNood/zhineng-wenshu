@@ -26,8 +26,8 @@ from app.tools import sql_tool
 
 
 def _prompts_unchanged() -> None:
-    assert len(QUERY_SYS) == 580 and QUERY_SYS.endswith("{data_map}")
-    assert len(WORKER_SYS) == 634 and WORKER_SYS.endswith("{data_map}")
+    assert len(QUERY_SYS) == 498 and "data_map" not in QUERY_SYS
+    assert len(WORKER_SYS) == 552 and "data_map" not in WORKER_SYS
     assert len(MERGE_SYS) == 232 and MERGE_SYS.startswith("你是结果汇聚者")
     assert len(PLANNER_SYS) == 960 and PLANNER_SYS.startswith("你是智能问数系统的规划器")
     assert MAIN_SYS.startswith("你是智能问数的主 Agent")

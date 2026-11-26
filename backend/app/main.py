@@ -63,18 +63,34 @@ async def stream(session_id: str):
         finally:
             await q.put(None)
 
-    asyncio.create_task(runner())
+    task = asyncio.create_task(runner())
+
+    # 临时隧道会把很小的 SSE 包攒到连接结束才下发。每条事件后垫一段注释，迫使它马上转发。
+    pad = ":" + (" " * 8192) + "\n\n"
 
     async def gen():
-        yield "retry: 2000\n\n"
-        while True:
-            ev = await q.get()
-            if ev is None:
-                break
-            yield f"data: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
+        try:
+            yield "retry: 2000\n\n"
+            yield pad
+            while True:
+                ev = await q.get()
+                if ev is None:
+                    break
+                yield f"data: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
+                yield pad
+        finally:
+            if not task.done():
+                task.cancel()
 
-    return StreamingResponse(gen(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/session/{session_id}")

@@ -2,7 +2,6 @@
 from __future__ import annotations
 from ..ontology import loader as onto
 from ..schemas import Evidence, SubResult
-from ..tools import sql_tool
 from ..skills import loader as skilllib
 from .plan_execute import run_plan_execute
 from .react_graph import QUERY_SYS, run_react
@@ -78,7 +77,7 @@ async def run_query_point(goal: str, question: str, model: str, emit, cursor, co
     ontology_brief = _ontology_brief()
     await emit_ontology(emit, "query", goal, question)
     messages = [
-        {"role": "system", "content": QUERY_SYS.format(data_map=sql_tool.data_map_text())},
+        {"role": "system", "content": QUERY_SYS},
         {"role": "user", "content": (
             f"【本体标准指标口径，必须遵守，禁止自造】\n{ontology_brief}\n\n"
             f"原始问题：{question}\n查询目标：{goal}")},

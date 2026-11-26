@@ -75,11 +75,6 @@ export function useQa() {
   }, []);
 
   const handleEvent = useCallback((ev: any) => {
-    // 追加主对话时间线节点（按事件到达顺序）
-    const pushNode = (n: TimelineNode) => {
-      tlRef.current = [...tlRef.current, n];
-      setTimeline(tlRef.current);
-    };
     switch (ev.type) {
       case "intent":
         setIntent(ev.points);
@@ -124,11 +119,20 @@ export function useQa() {
           },
         }));
         break;
-      case "act":
-        if (ev.skill_id === "main" || ev.skill_id === "planner") {
-          pushNode({ kind: "act", skill_id: ev.skill_id || "", text: ev.text || "" });
+      case "act": {
+        // 和思考一样按增量拼接，避免每个 token 变成一块。到达即展示。
+        const piece = ev.text || "";
+        const sid = ev.skill_id || "";
+        if (sid === "main" || sid === "planner") {
+          const cur = tlRef.current;
+          const last = cur[cur.length - 1];
+          tlRef.current = last && last.kind === "act" && last.skill_id === sid
+            ? [...cur.slice(0, -1), { ...last, text: last.text + piece }]
+            : [...cur, { kind: "act", skill_id: sid, text: piece }];
+          setTimeline(tlRef.current);
         }
         break;
+      }
       case "reasoning": {
         // 主 Agent 一轮一个思考段。专家的思维链挂在计划步骤上，不进主时间线，也不拆成步骤。
         const piece = ev.text || "";
@@ -146,10 +150,11 @@ export function useQa() {
       case "tool_call":
         // 主 Agent 的工具进主时间线；专家工具归各自栏
         if (ev.skill_id === "main" || ev.skill_id === "planner" || ev.skill_id === "query") {
-          pushNode({
+          tlRef.current = [...tlRef.current, {
             kind: "tool", skill_id: ev.skill_id || "", tool: ev.tool, title: ev.title,
             detail: ev.detail, sql: ev.sql, body: ev.body,
-          });
+          }];
+          setTimeline(tlRef.current);
         }
         setTrace((t) => [...t, {
           kind: "tool", skill_id: ev.skill_id || "", tool: ev.tool, title: ev.title,
@@ -180,12 +185,13 @@ export function useQa() {
         break;
       }
       case "chat_answer":
-        setChatAnswer(ev.text);
+        setChatAnswer(ev.text || "");
         setBusy(false);
         break;
       case "query_answer":
         // 问数由主 Agent 直答：作为主对话时间线节点插入，不进专家体系
-        pushNode({ kind: "answer", text: ev.text || "" });
+        tlRef.current = [...tlRef.current, { kind: "answer", text: ev.text || "" }];
+        setTimeline(tlRef.current);
         setEvidences((prev) => [...prev, ...(ev.evidences || [])]);
         break;
       case "consensus":

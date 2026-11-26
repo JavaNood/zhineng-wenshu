@@ -10,7 +10,8 @@ load_dotenv(ROOT / ".env")
 
 # ---- 路径 ----
 DATA_DIR = ROOT / os.getenv("DATA_DIR", "data/CN_Ecommerce_Ops")
-ONTOLOGY_FILE = ROOT / "ontology" / "retail_semantic.yaml"
+ONTOLOGY_DIR = ROOT / "ontology"
+SEMANTIC_DIR = ROOT / "semantic"
 SKILL_DIR = ROOT / "skills"
 RUNTIME_DIR = ROOT / "runtime"
 RUNTIME_DIR.mkdir(exist_ok=True)

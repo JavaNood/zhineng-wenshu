@@ -34,20 +34,23 @@ function Thought({ text }: { text?: string }) {
 function ExpertBlock({ agent, steps }: { agent: AgentCard; steps: StepLog[] }) {
   const sqls = steps.filter((s) => s.kind === "sql");
   const plan = agent.plan || [];
+  const stepDone = (n: number, action: string) =>
+    sqls.some((s) => s.step === n || (s.action && s.action === action));
+  const doneCount = plan.filter((p) => stepDone(p.n, p.action)).length;
   return (
     <div className="expert-block">
       <div className="expert-block-head">
         <span className="expert-name">{agent.skill_name}</span>
         <span className={`badge badge-${agent.status}`}>{STATUS_LABEL[agent.status]}</span>
-        <span className="step-count">{plan.length ? `${sqls.length}/${plan.length} 步` : `${sqls.length} 步`}</span>
+        <span className="step-count">{plan.length ? `${doneCount}/${plan.length} 步` : `${sqls.length} 步`}</span>
       </div>
 
       <Thought text={agent.planThought} />
 
       {plan.length > 0 ? (
         <ol className="step-list">
-          {plan.map((p, i) => {
-            const done = sqls[i];
+          {plan.map((p) => {
+            const done = sqls.find((s) => s.step === p.n || (s.action && s.action === p.action));
             return (
               <li key={p.n} className="step-row">
                 <div className="step-head plan-head">

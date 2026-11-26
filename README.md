@@ -1,87 +1,127 @@
 # 智能问数 · 多专家并行分析 Demo
 
-基于开源零售数据集（7 个 CSV），演示**指标语义层（本体）**与 **Agent + Skill 多专家并行、结果可比较可验证**两条核心成果。
-用户一句自然语言提问，系统完成意图理解 → Plan 编排 → 多 Skill（专家）子 Agent 并行取数 → 共识/分歧汇聚，每条结论绑定可回溯证据（指标口径、SQL、结果快照）。
+基于开源零售数据集（7 个 CSV），演示两件事：本体层与业务语义层分开治理，以及主从 Agent 按官方函数调用查数、派专家、给出可回溯证据。
 
-> 数据来源：https://github.com/hccccc01333/powerbi-retail-analysis （仅用 CN_Ecommerce_Ops 7 个 CSV）
+用户用一句自然语言提问。主 Agent 自己决定查知识、写 SQL、先报告数值、再派专家。分析专家先写计划，再按同一套查数工具取数。每条结论可以回看 SQL 和结果。
+
+> 数据来源：https://github.com/hccccc01333/powerbi-retail-analysis （只用 CN_Ecommerce_Ops 的 7 个 CSV）
+> 实现说明见 `docs/开发文档.md`。
 
 ## 一、快速启动
 
 ### 1. 后端
+
 ```bash
 cd 智能问数
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
 
-# 配置 API Key（必填，不要写明文进仓库）
 cp .env.example .env
 # 编辑 .env，填入 DEEPSEEK_API_KEY=sk-...
 
 PYTHONPATH=backend uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-### 2. 前端（开发模式）
+后端同时提供 API。若已执行 `npm run build`，同一端口也托管 `frontend/dist`。
+
+### 2. 前端
+
 ```bash
 cd frontend
 npm install
-npm run dev          # http://127.0.0.1:5173 ，已代理 /api 到 8000
+npm run dev          # http://127.0.0.1:5173 ，/api 代理到 8000
 ```
+
 生产构建：`npm run build`，产物在 `frontend/dist/`。
 
-### 3. 连通性自检（不需要 Key）
-```bash
-./.venv/bin/python scripts/smoke_test.py
-```
-校验本体、指标对齐、4 个 Skill、DuckDB 真实取数、只读拦截、应用可导入。
+### 3. 自检
 
-LangGraph 编排（不调真实模型，校验路由、并行、step 上限、提示词未改）：
+不调用真实模型：
+
 ```bash
-python scripts/graph_smoke.py
+PYTHONPATH=backend ./.venv/bin/python scripts/smoke_test.py
+PYTHONPATH=backend ./.venv/bin/python scripts/graph_smoke.py
 ```
 
-## 二、演示话术（现场输入）
-- 问数：`2025 年销售额是多少？环比 2024 年如何？`
-- 分析：`2025Q4 销售额环比 Q3 下降，原因是什么？`（系统动态选 ≥2 个专家并行）
-- 组合：`2025 销售额如何？环比如何？为什么变动了？`（拆成 2 问数点 + 1 分析点）
+`smoke_test.py` 校验两层知识、认证指标、四位专家、DuckDB 只读拦截。`graph_smoke.py` 用假模型校验主图路由、专家并行、步数上限和官方 `tool_calls` 协议。
 
-页面可看：意图拆分与 Plan、模型思维链、子 Agent 并行进度（并排）、各专家结论、共识/分歧、汇总、可展开的 SQL/结果证据、Tokens 统计；右上角下拉切换模型，默认 deepseek-reasoner。
+## 二、页面上能看到什么
 
-## 三、目录结构
+- 左上角标题下方是「本体」开关，字号与「智能问数」相同。默认开启。这一轮还在回答时不能切换，切换只影响之后发出的问题。
+- 还没提问时，欢迎语中间显示当前状态：「已开启本体知识访问」或「已关闭本体知识访问能力，Agent回答可信度降低」。
+- 第一轮回答结束后，同一句状态出现在该轮末尾。再拨动开关，这句话跟着变成当前状态，并留在这一轮末尾。下一轮开始后，它不再自动出现；只有用户再次拨动开关，才显示在新的这一轮末尾。
+- 本体关闭的那一轮，气泡下方有红字「本轮回答未使用本体知识」。本体开着的轮次没有这句。
+- 每一轮结束显示 `输入 N tokens · 输出 N tokens`。再提下一问后，上一轮的数字还在。
+- 模型下拉在右上角，白名单是 `deepseek-chat` 与 `deepseek-reasoner`，默认 `deepseek-reasoner`。
+- 灰色「思考」来自 `reasoning_content`。黑色步骤是模型写给用户的 `content`。工具名和参数走官方 `tool_calls`，页面上是单独的工具卡片。
+
+## 三、演示问题
+
+- 问数：`2025年的销售额是多少？`
+- 问数：`2025年各渠道的销售额和订单量`
+- 分析：`2025年1季度和2季度的销售额是多少，变化的原因是什么？`
+
+本体开启时，写 SQL 之前要先成功调用 `resolve_certified_metric` 和 `read_sql_plan`。本体关闭时，这两层工具不可用，先 `describe_schema` 再由模型自己写 SQL。数字是否不同不作为通过条件。
+
+原因类问题先把点名的数值 `report` 给用户，再 `list_skills`，再 `dispatch`。SQL、报告和派工不放在同一次回复里。
+
+## 四、目录
+
 ```
 智能问数/
-├── data/CN_Ecommerce_Ops/      # 7 个 CSV（不入库、不改动）
-├── ontology/retail_semantic.yaml   # 指标语义层本体（表/指标口径/维度/关系/枚举）
-├── skills/                    # 分析专家 Skill 库（官方 SKILL.md 形态，一专家一目录）
-│   ├── value-price-breakdown/SKILL.md    # 量价结构拆解
-│   ├── seasonality-diagnosis/SKILL.md    # 时序季节诊断
-│   ├── benchmark-target/SKILL.md         # 目标与门店对标
-│   └── customer-refund/SKILL.md           # 客群与退款诊断
+├── data/CN_Ecommerce_Ops/          # 7 个 CSV
+├── ontology/                       # 本体层：实体、值域、关系、策略。不含聚合公式
+│   ├── entities.yaml
+│   ├── value_domains.yaml
+│   ├── relations.yaml
+│   └── policies.yaml
+├── semantic/                       # 业务语义层：逻辑数据集、认证指标、SQL 规划约束
+│   ├── logical_datasets.yaml
+│   ├── certified_metrics.yaml
+│   └── sql_planner.yaml
+├── skills/                         # 四位分析专家，目录 id 不变
+│   ├── value-price-breakdown/      # 量价结构拆解专家-小王
+│   ├── seasonality-diagnosis/      # 时序季节诊断专家-小黄
+│   ├── benchmark-target/           # 目标与门店对标专家-小李
+│   └── customer-refund/            # 客群与退款诊断专家-小陈
 ├── backend/app/
-│   ├── config.py / llm.py / db.py / schemas.py / main.py
-│   ├── ontology/loader.py          # 本体加载、resolve_metric、校验
-│   ├── skills/loader.py            # 技能库加载（解析 */SKILL.md frontmatter+正文）
-│   ├── tools/                     # registry / ontology_tools / sql_tool / skill_tools
-│   ├── agents/                     # LangGraph 主图 + ReAct 子图（planner / orchestrator / react_graph）
-│   └── store/session.py            # 会话 JSON 快照
-├── frontend/ (React + Vite + TS)
-├── scripts/                     # probe_data.py / smoke_test.py
+│   ├── main.py                     # FastAPI、SSE、静态页
+│   ├── llm.py                      # DeepSeek 流式：reasoning_content / content / tool_calls
+│   ├── db.py                       # DuckDB 视图别名
+│   ├── ontology/loader.py
+│   ├── semantic/loader.py
+│   ├── tools/                      # batch.py 批处理门闩，schemas.py 官方函数定义
+│   └── agents/                     # 在线主图 orchestrator → main_react；专家 plan_execute
+├── frontend/                       # React + Vite + TS
+├── scripts/smoke_test.py
+├── scripts/graph_smoke.py
 └── docs/开发文档.md
 ```
 
-## 四、核心指标口径（本体固化，禁止 LLM 自造）
-- 销售额 = SUM(实付金额) − SUM(退款金额)
-- 订单量 = COUNT(DISTINCT 订单ID)
-- 毛利额 = SUM(毛利额)；毛利率 = 毛利额 / 销售额
-- 客单价 = 销售额 / 订单量；折扣率 = SUM(折扣金额)/SUM(商品金额)
-- 销售目标达成率 = 销售额 / SUM(销售目标)；毛利目标达成率 = 毛利额 / SUM(毛利目标)
+DuckDB 视图：`orders`、`items`、`target`、`d_date`、`d_cust`、`d_store`、`d_prod`。
 
-## 五、硬约束
-- 子 Agent 最大并行 3；单 Agent step 上限 60（超限中止标注，不伪造完成）。
-- 不预设答案、不用正则/固定话术伪造结果；SQL 报错在 step 内修正重试，不降级给假答案。
-- 单次对话有效，无跨会话记忆；无登录，Key 由后端 `.env` 注入。
-- 无 Key 时接口返回明确错误事件，不崩溃、不编造。
+## 五、认证口径
 
-## 六、说明
-- 编排为 LangGraph。主 Agent 按 ReAct 一轮只调用一个工具：读本体、执行 SQL、查看技能、派出专家、再汇总。专家先写出计划，再按计划逐步取数。子 Agent 用 `Send` 并行，`max_concurrency=3`，单 Agent step ≤60。不挂 checkpoint。
-- 模型白名单：deepseek-chat / deepseek-reasoner，默认 deepseek-reasoner（返回 reasoning_content）。前端可切，后端校验。页面上的思考与步骤标题取模型当次输出，不写旁白。
+口径只存在 `semantic/certified_metrics.yaml`。提示词不预写公式。本体开启时，模型通过 `resolve_certified_metric` 读取。
+
+- 销售额 `sales_amount` = `SUM(实付金额) - SUM(退款金额)`
+- 订单量 `order_count` = `COUNT(DISTINCT 订单ID)`
+- 毛利额 `gross_profit` = `SUM(毛利额)`
+- 折扣金额 `discount_amount` = `SUM(折扣金额)`
+- 毛利率 = 毛利额 / 销售额
+- 客单价 = 销售额 / 订单量
+- 折扣率 = `SUM(折扣金额) / SUM(商品金额)`
+- 销售目标达成率 = 销售额 / 销售目标
+- 毛利目标达成率 = 毛利额 / 毛利目标
+
+`sql_planner.yaml` 只写来源表、时间列、允许的关系、扇出注意。不写现成的 `SELECT`。
+
+## 六、硬约束
+
+- 一次模型回复最多 4 个函数。超过的不执行，并以 `role: tool` 返回「未执行」和原因。主循环按回复次数计，上限 32 次。
+- 子 Agent 并行不超过 3。单个专家按回复次数计，上限 60。计划最多 20 步。超限停在已有证据上，不补写完成。
+- SQL 只允许只读 `SELECT`。写操作在工具层拒绝。
+- 查询和报告只覆盖用户点名的指标、时间和维度。原因、变化、诊断交给专家，主 Agent 不用额外 SQL 自己拆。
+- 单次对话有效，无登录，无跨会话记忆。Key 只放后端 `.env`。
+- 不预设业务数字，不用正则把某次演示答案写死。

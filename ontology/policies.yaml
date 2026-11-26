@@ -1,0 +1,17 @@
+# 本体层：策略。只写规则，不写聚合公式。
+policies:
+  - id: pol_money_display
+    summary: 金额单位与展示精度
+    text: 金额单位为人民币元，展示保留两位小数。
+  - id: pol_time_grain
+    summary: 时间必须落到日期实体
+    text: 时间表达必须落到日期实体的年、季度、月或年月。环比、同比要写明对照窗口。
+  - id: pol_refund_filter
+    summary: 退款与取消的过滤
+    text: 退款、取消订单不额外剔除。若只要成交订单，须在 SQL 中显式过滤订单状态，并在结论中注明。
+  - id: pol_join_whitelist
+    summary: 只允许已登记的关系
+    text: 关联只能使用关系文件中的关系 id，禁止临场猜测关联。
+  - id: pol_use_certified
+    summary: 指标必须引用认证指标
+    text: 销售额、订单量、毛利额、毛利率、客单价、折扣率、销售目标达成率、毛利目标达成率必须使用认证指标中的对应 code，禁止在未见认证指标时自造口径。

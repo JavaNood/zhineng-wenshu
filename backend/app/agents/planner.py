@@ -1,17 +1,15 @@
 """planner：意图三分类拆分、Plan 生成、分析点动态选 Skill（≥2）。"""
 from __future__ import annotations
 from .. import llm
-from ..ontology import loader as onto
+from ..semantic import loader as sem
 from ..skills import loader as skilllib
 from ..schemas import IntentPoint, Plan, PlanStep
 from .textutil import _extract_json
 
 
 def _ontology_brief() -> str:
-    metrics = "、".join(f"{m['name']}({m['code']}={m['expression'] or m['formula']})"
-                         for m in onto.list_metrics())
-    dims = "、".join(d["name"] for d in onto.list_dimensions())
-    return f"标准指标：{metrics}\n可下钻维度：{dims}"
+    metrics = "、".join(f"{m['name']}({m['code']})" for m in sem.list_metrics())
+    return f"标准指标：{metrics}"
 
 
 def _skill_brief() -> str:

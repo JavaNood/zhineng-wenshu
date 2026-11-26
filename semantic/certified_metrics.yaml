@@ -1,0 +1,89 @@
+# 业务语义层：认证指标。表达式从原语义文件原样迁入。
+metrics:
+  - code: sales_amount
+    name: 销售额
+    synonyms: [销售额, 营收, 成交额, 收入, 营业额]
+    kind: base
+    dataset: orders
+    expression: "SUM(实付金额) - SUM(退款金额)"
+    additivity: additive
+    unit: 元
+    dims: [channel, region, store, category_l1, customer_grade, promo, month, quarter, payment, order_status]
+    policy_refs: [pol_use_certified, pol_money_display]
+
+  - code: order_count
+    name: 订单量
+    synonyms: [订单数, 单量, 成交订单数, 订单笔数]
+    kind: base
+    dataset: orders
+    expression: "COUNT(DISTINCT 订单ID)"
+    additivity: additive
+    unit: 单
+    dims: [channel, region, store, customer_grade, promo, month, quarter, payment]
+    policy_refs: [pol_use_certified]
+
+  - code: gross_profit
+    name: 毛利额
+    synonyms: [毛利, 毛利总额]
+    kind: base
+    dataset: orders
+    expression: "SUM(毛利额)"
+    additivity: additive
+    unit: 元
+    dims: [channel, region, store, category_l1, customer_grade, month, quarter]
+    policy_refs: [pol_use_certified, pol_money_display]
+
+  - code: discount_amount
+    name: 折扣金额
+    synonyms: [优惠金额, 让利]
+    kind: base
+    dataset: orders
+    expression: "SUM(折扣金额)"
+    additivity: additive
+    unit: 元
+    dims: [channel, region, category_l1, promo, month]
+    policy_refs: [pol_use_certified]
+
+  - code: gross_margin
+    name: 毛利率
+    kind: derived
+    formula: "gross_profit / sales_amount"
+    unit: 比率
+    note: 毛利率等于毛利额除以销售额，分母为销售额。
+    policy_refs: [pol_use_certified]
+
+  - code: avg_order_value
+    name: 客单价
+    synonyms: [件单价均, 单均金额]
+    kind: derived
+    formula: "sales_amount / order_count"
+    unit: 元/单
+    note: 客单价等于销售额除以订单量。
+    policy_refs: [pol_use_certified]
+
+  - code: discount_rate
+    name: 折扣率
+    synonyms: [折扣占比]
+    kind: derived
+    formula: "SUM(折扣金额) / SUM(商品金额)"
+    unit: 比率
+    note: 折扣率等于折扣金额除以商品金额。
+    policy_refs: [pol_use_certified]
+
+  - code: sales_target_rate
+    name: 销售目标达成率
+    synonyms: [销售达成率, 目标完成率]
+    kind: derived
+    formula: "sales_amount / SUM(目标.销售目标)"
+    unit: 比率
+    note: 需将月度目标按门店与年月对齐窗口后求和。
+    policy_refs: [pol_use_certified]
+
+  - code: gross_target_rate
+    name: 毛利目标达成率
+    synonyms: [毛利达成率]
+    kind: derived
+    formula: "gross_profit / SUM(目标.毛利目标)"
+    unit: 比率
+    note: 需将月度目标按门店与年月对齐窗口后求和。
+    policy_refs: [pol_use_certified]

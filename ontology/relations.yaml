@@ -1,0 +1,9 @@
+# 本体层：关系。只允许这些路径。
+relations:
+  - {id: rel_order_date, from: 订单.订单日期, to: 日期.日期, type: many-to-one}
+  - {id: rel_order_customer, from: 订单.客户ID, to: 客户.客户ID, type: many-to-one}
+  - {id: rel_order_store, from: 订单.门店ID, to: 门店.门店ID, type: many-to-one}
+  - {id: rel_item_order, from: 订单明细.订单ID, to: 订单.订单ID, type: many-to-one}
+  - {id: rel_item_product, from: 订单明细.商品ID, to: 商品.商品ID, type: many-to-one}
+  - {id: rel_target_store, from: 月度目标.门店ID, to: 门店.门店ID, type: many-to-one}
+  - {id: rel_target_date, from: 月度目标.年月, to: 日期.年月, type: many-to-one}

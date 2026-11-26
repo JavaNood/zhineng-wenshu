@@ -24,11 +24,16 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     question: str
     model: str | None = None
+    ontology_enabled: bool = True
 
 
 @app.on_event("startup")
 def _startup():
     init_db()
+    from .ontology.loader import validate_ontology
+    problems = validate_ontology()
+    if problems:
+        print("知识校验未通过:", problems)
 
 
 @app.get("/api/models")
@@ -40,7 +45,7 @@ def models():
 @app.post("/api/chat")
 def chat(req: ChatRequest):
     model = resolve_model(req.model)
-    s = create_session(req.question.strip(), model)
+    s = create_session(req.question.strip(), model, req.ontology_enabled)
     return {"session_id": s.session_id, "model": model, "key_configured": has_key()}
 
 

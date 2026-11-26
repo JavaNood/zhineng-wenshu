@@ -1,0 +1,112 @@
+# 本体层：实体。只描述业务对象和属性含义，不写聚合公式。
+entities:
+  - name: 订单
+    grain: 一行一个订单
+    identifier: 订单ID
+    description: 订单级交易事实
+    attributes:
+      - {name: 订单ID, desc: 订单唯一编号，去重计数用, synonyms: [订单号]}
+      - {name: 订单日期, desc: 订单发生日期，关联日期实体}
+      - {name: 订单时间, desc: 下单时间}
+      - {name: 客户ID, desc: 关联客户实体}
+      - {name: 门店ID, desc: 关联门店实体}
+      - {name: 销售渠道, desc: 订单来源渠道}
+      - {name: 支付方式, desc: 支付渠道}
+      - {name: 订单状态, desc: 已完成、已发货、待发货、已退款、已取消}
+      - {name: 商品金额, desc: 优惠前商品原始金额}
+      - {name: 折扣金额, desc: 订单优惠金额}
+      - {name: 运费, desc: 订单运费}
+      - {name: 实付金额, desc: 客户实际支付金额}
+      - {name: 退款金额, desc: 退款金额}
+      - {name: 成本金额, desc: 订单对应成本}
+      - {name: 毛利额, desc: 订单毛利}
+      - {name: 是否新客首单, desc: 是或否，客户首单标记}
+    policy_refs: [pol_refund_filter, pol_join_whitelist, pol_time_grain]
+
+  - name: 订单明细
+    grain: 一行一个订单商品行
+    identifier: 订单明细ID
+    description: 订单商品明细，用于类目结构和商品贡献
+    attributes:
+      - {name: 订单明细ID, desc: 明细唯一编号}
+      - {name: 订单ID, desc: 关联订单实体}
+      - {name: 商品ID, desc: 关联商品实体}
+      - {name: 数量, desc: 购买数量}
+      - {name: 成交单价, desc: 实际成交单价}
+      - {name: 成交金额, desc: 明细行成交金额}
+      - {name: 折扣金额, desc: 明细行优惠金额}
+      - {name: 成本金额, desc: 明细行成本}
+      - {name: 毛利额, desc: 明细行毛利}
+    policy_refs: [pol_join_whitelist]
+
+  - name: 月度目标
+    grain: 一行一个门店一个月的目标
+    identifier: 门店ID+年月
+    description: 门店月度目标，达成率分母来源
+    attributes:
+      - {name: 年月, desc: 格式 YYYY-MM，关联日期实体}
+      - {name: 门店ID, desc: 关联门店实体}
+      - {name: 销售目标, desc: 月度销售目标}
+      - {name: 毛利目标, desc: 月度毛利目标}
+      - {name: 订单量目标, desc: 月度订单量目标}
+    policy_refs: [pol_join_whitelist, pol_time_grain]
+
+  - name: 日期
+    grain: 一行一天，2023-01-01 至 2025-12-31
+    identifier: 日期
+    description: 日期维度
+    attributes:
+      - {name: 日期, desc: 主键}
+      - {name: 年, desc: 如 2025}
+      - {name: 季度, desc: 如 Q1}
+      - {name: 月, desc: 1 到 12}
+      - {name: 年月, desc: YYYY-MM}
+      - {name: 周, desc: 年内周序}
+      - {name: 星期, desc: 星期几}
+      - {name: 是否周末, desc: 是或否}
+      - {name: 是否月初, desc: 是或否}
+      - {name: 促销标记, desc: 日常、大促、会员日}
+    policy_refs: [pol_time_grain]
+
+  - name: 客户
+    grain: 一行一个客户
+    identifier: 客户ID
+    description: 客户维度
+    attributes:
+      - {name: 客户ID, desc: 主键}
+      - {name: 客户等级, desc: 普通、银卡、金卡、黑金}
+      - {name: 性别, desc: 男、女、未知}
+      - {name: 注册省份, desc: 注册省份}
+      - {name: 注册城市, desc: 注册城市}
+      - {name: 注册日期, desc: 注册日期}
+      - {name: 是否企业客户, desc: 是或否}
+    policy_refs: [pol_join_whitelist]
+
+  - name: 门店
+    grain: 一行一个门店
+    identifier: 门店ID
+    description: 门店维度
+    attributes:
+      - {name: 门店ID, desc: 主键}
+      - {name: 门店名称, desc: 门店名}
+      - {name: 大区, desc: 华东、华南、华北、西南、华中、东北、西北}
+      - {name: 省份, desc: 所在省}
+      - {name: 城市, desc: 所在市}
+      - {name: 渠道类型, desc: 综合或线下门店}
+      - {name: 开业日期, desc: 开业日期}
+    policy_refs: [pol_join_whitelist]
+
+  - name: 商品
+    grain: 一行一个商品
+    identifier: 商品ID
+    description: 商品维度
+    attributes:
+      - {name: 商品ID, desc: 主键}
+      - {name: 商品名称, desc: 商品名}
+      - {name: 一级类目, desc: 家电、数码、美妆、食品、服饰、母婴、家居}
+      - {name: 二级类目, desc: 二级分类}
+      - {name: 三级类目, desc: 三级分类}
+      - {name: 品牌, desc: 品牌}
+      - {name: 标价, desc: 挂牌价}
+      - {name: 成本价, desc: 成本价}
+    policy_refs: [pol_join_whitelist]

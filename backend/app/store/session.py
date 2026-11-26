@@ -8,10 +8,11 @@ from ..config import RUNTIME_DIR
 
 
 class Session:
-    def __init__(self, question: str, model: str):
+    def __init__(self, question: str, model: str, ontology_enabled: bool = True):
         self.session_id = uuid.uuid4().hex[:12]
         self.question = question
         self.model = model
+        self.ontology_enabled = ontology_enabled
         self.created = time.time()
         self.events: list[dict] = []
         self.plan: dict | None = None
@@ -30,6 +31,7 @@ class Session:
             "session_id": self.session_id,
             "question": self.question,
             "model": self.model,
+            "ontology_enabled": self.ontology_enabled,
             "created": self.created,
             "plan": self.plan,
             "events": self.events,
@@ -61,6 +63,7 @@ class Session:
             "session_id": self.session_id,
             "question": self.question,
             "model": self.model,
+            "ontology_enabled": self.ontology_enabled,
             "plan": self.plan,
             "events": self.events,
             "sub_results": self.sub_results,
@@ -72,8 +75,8 @@ class Session:
 _STORE: dict[str, Session] = {}
 
 
-def create_session(question: str, model: str) -> Session:
-    s = Session(question, model)
+def create_session(question: str, model: str, ontology_enabled: bool = True) -> Session:
+    s = Session(question, model, ontology_enabled)
     _STORE[s.session_id] = s
     return s
 

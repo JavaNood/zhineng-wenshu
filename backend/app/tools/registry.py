@@ -1,38 +1,14 @@
-"""工具注册表：登记工具说明与分发（function calling 风格的工具目录）。"""
+"""工具目录。在线执行走 batch.classify，这里只保留说明。"""
 from __future__ import annotations
-from typing import Any, Callable
 
-from . import ontology_tools, sql_tool, skill_tools
-
-# 给 LLM 的工具说明（主 Agent 可调用的只读目录工具；run_sql 由执行循环内联拦截，不在此注册）
 TOOL_SPECS = [
-    {"name": "read_ontology", "desc": "读取指标语义层：表/字段/指标口径/维度/关系。可选 topic 限定。"},
-    {"name": "resolve_metric", "desc": "把自然语言指标对齐本体标准指标与口径，禁止自造口径。"},
-    {"name": "list_skills", "desc": "列出技能库可用分析 Skill（专家）。"},
-    {"name": "list_dimensions", "desc": "列出可下钻维度与枚举值，避免猜枚举。"},
+    {"name": "read_entity", "layer": "ontology", "desc": "按实体名读取属性和标识。"},
+    {"name": "read_value_domain", "layer": "ontology", "desc": "按值域名读取枚举或取值来源。"},
+    {"name": "read_relations", "layer": "ontology", "desc": "按实体读取允许的关系。"},
+    {"name": "read_policies", "layer": "ontology", "desc": "按主题读取策略正文。"},
+    {"name": "read_logical_dataset", "layer": "semantic", "desc": "读取逻辑数据集的列、类型和粒度。"},
+    {"name": "resolve_certified_metric", "layer": "semantic", "desc": "把自然语言指标对齐认证指标。"},
+    {"name": "read_sql_plan", "layer": "semantic", "desc": "读取指标的 SQL 规划约束，不返回可执行 SQL。"},
+    {"name": "describe_schema", "layer": "physical", "desc": "读取视图别名、来源文件、列名和类型。"},
+    {"name": "list_skills", "layer": "orchestrator", "desc": "列出分析专家。"},
 ]
-
-
-def list_dimensions_text() -> str:
-    from ..ontology import loader as onto
-    import json
-    return json.dumps(
-        [{"code": d["code"], "name": d["name"], "values": d.get("values")}
-         for d in onto.list_dimensions()],
-        ensure_ascii=False, indent=2)
-
-
-# 主 Agent 可用工具（子 Agent 子集在 worker 内单独开放）
-HANDLERS: dict[str, Callable[..., str]] = {
-    "read_ontology": lambda **a: ontology_tools.read_ontology(a.get("topic", "")),
-    "resolve_metric": lambda **a: ontology_tools.resolve_metric(a.get("metric", "")),
-    "list_skills": lambda **a: skill_tools.list_skills(),
-    "list_dimensions": lambda **a: list_dimensions_text(),
-}
-
-
-def execute_tool(name: str, args: dict[str, Any] | None = None) -> str:
-    handler = HANDLERS.get(name)
-    if not handler:
-        return f"未知工具 {name}，可用：{list(HANDLERS)}"
-    return handler(**(args or {}))

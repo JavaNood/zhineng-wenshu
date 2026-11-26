@@ -16,11 +16,11 @@ export async function fetchModels(): Promise<ModelInfo> {
   return r.json();
 }
 
-export async function startChat(question: string, model: string): Promise<ChatStart> {
+export async function startChat(question: string, model: string, ontologyEnabled = true): Promise<ChatStart> {
   const r = await fetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question, model }),
+    body: JSON.stringify({ question, model, ontology_enabled: ontologyEnabled }),
   });
   return r.json();
 }

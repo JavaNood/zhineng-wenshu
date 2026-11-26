@@ -22,17 +22,54 @@ def has_key() -> bool:
     return bool(DEEPSEEK_API_KEY)
 
 
+def _absorb_tool_calls(acc: dict[int, dict], delta) -> None:
+    calls = getattr(delta, "tool_calls", None)
+    if not calls:
+        return
+    for tc in calls:
+        idx = tc.index if getattr(tc, "index", None) is not None else 0
+        slot = acc.setdefault(idx, {
+            "id": "", "type": "function", "function": {"name": "", "arguments": ""},
+        })
+        if getattr(tc, "id", None):
+            slot["id"] = tc.id
+        if getattr(tc, "type", None):
+            slot["type"] = tc.type
+        fn = getattr(tc, "function", None)
+        if fn is None:
+            continue
+        if getattr(fn, "name", None):
+            slot["function"]["name"] += fn.name
+        if getattr(fn, "arguments", None):
+            slot["function"]["arguments"] += fn.arguments
+
+
+def _finish_tool_calls(acc: dict[int, dict]) -> list[dict]:
+    calls = []
+    for idx in sorted(acc):
+        slot = acc[idx]
+        if not slot["id"]:
+            slot["id"] = f"call_{idx}"
+        if not slot["function"]["arguments"]:
+            slot["function"]["arguments"] = "{}"
+        calls.append(slot)
+    return calls
+
+
 async def chat_stream(
     messages: list[dict],
     model: str = DEFAULT_MODEL,
     on_content: Callable[[str], Any] | None = None,
     on_reasoning: Callable[[str], Any] | None = None,
+    tools: list[dict] | None = None,
 ) -> dict:
     """流式对话。on_content/on_reasoning 为增量回调（用于 SSE 实时推送）。
-    返回 {content, reasoning, usage:{prompt,completion,total}}。"""
+    返回 {content, reasoning, tool_calls, usage:{prompt,completion,total}}。
+    传入 tools 时，工具调用在 tool_calls，不在 content。"""
     client = get_client()
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
+    tool_acc: dict[int, dict] = {}
     usage = {"prompt": 0, "completion": 0, "total": 0}
 
     # deepseek-reasoner 不接受 temperature，传了会报错；思维链在 reasoning_content。
@@ -42,6 +79,8 @@ async def chat_stream(
         "stream": True,
         "stream_options": {"include_usage": True},
     }
+    if tools:
+        kwargs["tools"] = tools
     if "reasoner" not in (model or ""):
         kwargs["temperature"] = 0.3
     stream = await client.chat.completions.create(**kwargs)
@@ -63,10 +102,12 @@ async def chat_stream(
             content_parts.append(delta.content)
             if on_content:
                 await on_content(delta.content)
+        _absorb_tool_calls(tool_acc, delta)
 
     return {
         "content": "".join(content_parts),
         "reasoning": "".join(reasoning_parts),
+        "tool_calls": _finish_tool_calls(tool_acc),
         "usage": usage,
     }
 

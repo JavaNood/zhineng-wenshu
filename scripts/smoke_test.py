@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 from app.db import init_db, new_cursor
 from app.tools import sql_tool
 from app.ontology import loader as onto
+from app.semantic import loader as sem
 from app.skills import loader as skilllib
 
 
@@ -16,16 +17,21 @@ def main():
     assert not problems, problems
 
     # 2) 指标对齐
-    m = onto.resolve_metric("销售额")
+    m = sem.resolve_certified_metric("销售额")
     print("[指标对齐 销售额]", m["name"], "=", m["expression"])
     assert m and m["code"] == "sales_amount"
-    m2 = onto.resolve_metric("客单价")
-    print("[指标对齐 客单价]", m2["name"], "=", m2["formula"])
+    m2 = sem.resolve_certified_metric("客单价")
+    print("[指标对齐 客单价]", m2["name"], "=", m2.get("formula") or m2.get("expression"))
 
     # 3) 技能库加载
     skills = skilllib.list_skills()
     print("[技能库]", [s["id"] for s in skills])
     assert len(skills) == 4
+    names = {s["name"] for s in skills}
+    assert "量价结构拆解专家-小王" in names
+    assert "时序季节诊断专家-小黄" in names
+    assert "目标与门店对标专家-小李" in names
+    assert "客群与退款诊断专家-小陈" in names
 
     # 4) DuckDB 真实取数（只读）
     init_db()

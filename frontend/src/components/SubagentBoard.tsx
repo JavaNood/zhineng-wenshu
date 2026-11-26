@@ -20,6 +20,10 @@ function AgentCell({
   const [showThink, setShowThink] = useState(false);
   const steps = logs[agent.skill_id] || [];
   const sqlSteps = steps.filter((s) => s.kind === "sql");
+  const plan = agent.plan || [];
+  const stepDone = (n: number, action: string) =>
+    sqlSteps.some((s) => s.step === n || (s.action && s.action === action));
+  const doneCount = plan.filter((p) => stepDone(p.n, p.action)).length;
   const meta = STATUS_META[agent.status] || STATUS_META.waiting;
   // 该专家自己的取数工具调用（主链之外）
   const myRuns = trace.filter((t) => t.kind === "tool" && t.skill_id === agent.skill_id && t.tool === "run_sql");
@@ -56,13 +60,13 @@ function AgentCell({
           <div className="cell-thinkbox">
             <button type="button" className="cell-think-toggle" onClick={() => setShowThink((s) => !s)}>
               <span className="cell-think-arrow">{showThink ? "▼" : "▶"}</span>
-              计划 {sqlSteps.length}/{agent.plan?.length || sqlSteps.length}
+              计划 {plan.length ? doneCount : sqlSteps.length}/{plan.length || sqlSteps.length}
             </button>
             {showThink && (
               <div className="cell-thinkbody">
-                {(agent.plan?.length ? agent.plan : sqlSteps.map((s, i) => ({ n: i + 1, action: s.action || "" }))).map((p, i) => (
-                  <div key={p.n} className="cell-steprow kind-sql">
-                    <span className="cell-stepmark">{sqlSteps[i] ? "⚙️" : "○"}</span>
+                {(plan.length ? plan : sqlSteps.map((s, i) => ({ n: s.step || i + 1, action: s.action || "" }))).map((p) => (
+                  <div key={p.n + p.action} className="cell-steprow kind-sql">
+                    <span className="cell-stepmark">{stepDone(p.n, p.action) ? "⚙️" : "○"}</span>
                     <span className="cell-steptext">{p.action}</span>
                   </div>
                 ))}

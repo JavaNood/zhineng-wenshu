@@ -5,7 +5,7 @@ from decimal import Decimal
 from datetime import date, datetime
 from typing import Any
 
-from ..db import new_cursor, ALIAS_DOC
+from ..db import ALIASES, new_cursor
 
 _FORBIDDEN = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|COPY|ATTACH|DETACH|TRUNCATE|GRANT|REVOKE|PRAGMA|SET|USE)\b",
@@ -48,5 +48,25 @@ def run_sql(sql: str, cursor=None) -> dict[str, Any]:
         return {"error": f"{type(e).__name__}: {e}", "columns": [], "rows": [], "row_count": 0, "sql": sql}
 
 
-def alias_help() -> str:
-    return "可用表别名：" + "；".join(f"{k}={v}" for k, v in ALIAS_DOC.items())
+def describe_schema(table: str = "") -> str:
+    """物理表结构：视图别名、来源文件、列名、类型。不含口径、枚举和关联建议。"""
+    import json
+    catalog = [(src, alias, fname) for src, (alias, fname) in ALIASES.items()]
+    want = (table or "").strip()
+    chosen = []
+    for src, alias, fname in catalog:
+        keys = {src, alias, fname, fname.replace(".csv", "")}
+        if not want or want in keys:
+            chosen.append((alias, fname))
+    if want and not chosen:
+        return json.dumps({"error": f"未知表 {want}", "views": [a for _, a, _ in catalog]}, ensure_ascii=False)
+    cur = new_cursor()
+    out = []
+    for alias, fname in chosen:
+        desc = cur.execute(f"DESCRIBE {alias}").fetchall()
+        out.append({
+            "view": alias,
+            "file": fname,
+            "columns": [{"name": row[0], "type": row[1]} for row in desc],
+        })
+    return json.dumps(out, ensure_ascii=False, indent=2)

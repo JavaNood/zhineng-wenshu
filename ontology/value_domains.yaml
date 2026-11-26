@@ -1,0 +1,12 @@
+# 本体层：值域。封闭枚举写全；开放值域只指向来源列，不在此穷举。
+value_domains:
+  - {name: 销售渠道, entity: 订单, attribute: 销售渠道, closed: true, values: [线下门店, 天猫旗舰店, 抖音小店, 京东自营, 拼多多, 企业团购]}
+  - {name: 大区, entity: 门店, attribute: 大区, closed: true, values: [华东, 华南, 华北, 西南, 华中, 东北, 西北]}
+  - {name: 门店, entity: 门店, attribute: 门店名称, closed: false, source: 门店.门店名称, note: 取值来自门店实体的门店名称，不在此穷举}
+  - {name: 一级类目, entity: 商品, attribute: 一级类目, closed: true, values: [家电, 数码, 美妆, 食品, 服饰, 母婴, 家居]}
+  - {name: 客户等级, entity: 客户, attribute: 客户等级, closed: true, values: [普通, 银卡, 金卡, 黑金]}
+  - {name: 促销标记, entity: 日期, attribute: 促销标记, closed: true, values: [日常, 大促, 会员日]}
+  - {name: 支付方式, entity: 订单, attribute: 支付方式, closed: true, values: [微信支付, 支付宝, 货到付款, 花呗, 京东白条, 银行卡]}
+  - {name: 订单状态, entity: 订单, attribute: 订单状态, closed: true, values: [已完成, 已发货, 待发货, 已退款, 已取消]}
+  - {name: 月, entity: 日期, attribute: 年月, closed: false, source: 日期.年月, note: 取值来自日期实体的年月，不在此穷举}
+  - {name: 季度, entity: 日期, attribute: 季度, closed: true, values: [Q1, Q2, Q3, Q4]}

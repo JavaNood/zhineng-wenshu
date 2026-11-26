@@ -3,8 +3,14 @@ import type { TimelineNode } from "../hooks/useQa";
 import { Md } from "./Md";
 
 const TOOL_ICON: Record<string, string> = {
-  resolve_metric: "📚",
-  read_ontology: "📚",
+  read_entity: "📚",
+  read_value_domain: "📚",
+  read_relations: "📚",
+  read_policies: "📚",
+  read_logical_dataset: "📚",
+  resolve_certified_metric: "📚",
+  read_sql_plan: "📚",
+  describe_schema: "📚",
   list_skills: "🧭",
   run_sql: "⚙️",
   report: "📝",

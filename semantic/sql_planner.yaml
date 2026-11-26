@@ -1,0 +1,72 @@
+# 业务语义层：SQL 规划约束。不包含针对具体问题写好的 SELECT。
+plans:
+  - metric: sales_amount
+    dataset: orders
+    time_column: 订单日期
+    grain: 订单
+    group_hints:
+      - 按销售渠道分组时用 orders 自身的销售渠道，不必另找关系
+    relations: []
+    fanout: 订单级金额不要直接对 items 求和。按类目下钻时才使用 rel_item_order 与 rel_item_product，明细行会放大订单级金额。
+
+  - metric: order_count
+    dataset: orders
+    time_column: 订单日期
+    grain: 订单
+    group_hints:
+      - 计数列是订单ID，按渠道、大区、门店分组时保持订单去重
+    relations: []
+    fanout: 不要把明细行数当成订单量。关联 items 后必须按订单ID 去重。
+
+  - metric: gross_profit
+    dataset: orders
+    time_column: 订单日期
+    grain: 订单
+    relations: []
+    fanout: 订单级毛利额不要直接对 items 的毛利额求和。
+
+  - metric: discount_amount
+    dataset: orders
+    time_column: 订单日期
+    grain: 订单
+    relations: []
+    fanout: 使用 orders 上的折扣金额。明细折扣是另一粒度。
+
+  - metric: gross_margin
+    dataset: orders
+    time_column: 订单日期
+    grain: 订单
+    depends_on: [gross_profit, sales_amount]
+    relations: []
+    fanout: 分子分母都在订单粒度上计算后再相除。
+
+  - metric: avg_order_value
+    dataset: orders
+    time_column: 订单日期
+    grain: 订单
+    depends_on: [sales_amount, order_count]
+    relations: []
+    fanout: 先得到销售额和去重订单量，再相除。
+
+  - metric: discount_rate
+    dataset: orders
+    time_column: 订单日期
+    grain: 订单
+    relations: []
+    fanout: 分子折扣金额、分母商品金额都取 orders。
+
+  - metric: sales_target_rate
+    dataset: orders
+    time_column: 订单日期
+    grain: 订单对齐到门店月
+    depends_on: [sales_amount]
+    relations: [rel_order_store, rel_target_store, rel_target_date]
+    fanout: 销售目标在 target。按门店与年月对齐后再求和，不要用全期目标做分母。
+
+  - metric: gross_target_rate
+    dataset: orders
+    time_column: 订单日期
+    grain: 订单对齐到门店月
+    depends_on: [gross_profit]
+    relations: [rel_order_store, rel_target_store, rel_target_date]
+    fanout: 毛利目标在 target。按门店与年月对齐后再求和。

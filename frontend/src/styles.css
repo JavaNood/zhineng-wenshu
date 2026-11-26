@@ -12,7 +12,11 @@ body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", 
 /* 顶栏 */
 .topbar { display: flex; justify-content: space-between; align-items: center;
   padding: 12px 22px; background: #fff; border-bottom: 1px solid var(--line); }
+.topbar-right { display: flex; align-items: center; gap: 16px; }
+.brand-block { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .brand { font-weight: 700; font-size: 17px; }
+.ontology-switch { display: flex; align-items: center; gap: 8px; font-size: 17px; font-weight: 700; color: var(--ink); cursor: pointer; }
+.ontology-switch input { width: 18px; height: 18px; margin: 0; }
 .brand-sub { font-weight: 400; color: var(--muted); font-size: 13px; margin-left: 8px; }
 .model-picker { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
 .model-picker select { padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
@@ -140,6 +144,11 @@ body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", 
 .summary-text { line-height: 1.8; }
 
 /* 底部输入框 */
+.ontology-banner { text-align: center; font-size: 22px; font-weight: 650; line-height: 1.5; margin: 36px 8% 8px; }
+.ontology-banner.on { color: var(--ok); }
+.ontology-banner.off { color: var(--bad); }
+.warn-red { color: var(--bad); font-size: 13px; margin: 0 0 10px; }
+.turn-tokens { color: var(--muted); font-size: 12.5px; margin: -6px 0 18px; }
 .composer { display: flex; gap: 10px; padding: 14px 10% 20px; align-items: flex-end; }
 .composer textarea { flex: 1; resize: none; padding: 12px 14px; border: 1px solid var(--line);
   border-radius: 14px; font-size: 14px; font-family: inherit; max-height: 160px; outline: none; }

@@ -12,6 +12,12 @@ const fixTitle = (s?: string) =>
   (s || "").replace(/该\s*Skill\s*视角下的主要原因/g, "该专家的主要结论");
 
 /** 一轮已经结束的对话。再提问时整段留在上面，不跟当前这一轮混在一起。 */
+interface TokenUsage {
+  prompt: number;
+  completion: number;
+  total: number;
+}
+
 interface PastTurn {
   question: string;
   error: string;
@@ -24,11 +30,24 @@ interface PastTurn {
   consensus: any[];
   divergences: any[];
   summary: string;
+  tokens: TokenUsage | null;
+  ontologyEnabled: boolean;
+  /** 这一轮结束时冻结的本体状态。null 表示这一轮不显示状态句。 */
+  statusOn: boolean | null;
 }
 
-function TurnThread(props: PastTurn & { busy: boolean }) {
+function supportNames(support: unknown, agents: Record<string, AgentCard>) {
+  const ids = Array.isArray(support) ? support : [];
+  return ids.map((id) => agents[String(id)]?.skill_name || String(id)).join("、");
+}
+
+function ontologyStatusText(on: boolean) {
+  return on ? "已开启本体知识访问" : "已关闭本体知识访问能力，Agent回答可信度降低";
+}
+
+function TurnThread(props: PastTurn & { busy: boolean; statusOn?: boolean | null }) {
   const { question, error, busy, timeline, dispatchAt, agents, logs, trace,
-    chatAnswer, consensus, divergences, summary } = props;
+    chatAnswer, consensus, divergences, summary, tokens, ontologyEnabled, statusOn } = props;
   const expertAgents = Object.values(agents).filter(
     (a) => a.skill_id !== "query" && a.status === "done" && a.conclusion
   );
@@ -83,7 +102,7 @@ function TurnThread(props: PastTurn & { busy: boolean }) {
                   <div className="consensus">
                     <b>共识（多方法共同指向）：</b>
                     <ul>{consensus.map((c, i) => (
-                      <li key={i}><Md text={c.point} /> <em>（{c.support?.join("、")}）</em></li>
+                      <li key={i}><Md text={c.point} /> <em>（{supportNames(c.support, agents)}）</em></li>
                     ))}</ul>
                   </div>
                 )}
@@ -106,6 +125,17 @@ function TurnThread(props: PastTurn & { busy: boolean }) {
           </div>
         </div>
       )}
+      {!busy && !ontologyEnabled && (timeline.length > 0 || chatAnswer || summary || error) && (
+        <p className="warn-red">本轮回答未使用本体知识</p>
+      )}
+      {!busy && tokens && (
+        <p className="turn-tokens">
+          输入 {tokens.prompt.toLocaleString()} tokens · 输出 {tokens.completion.toLocaleString()} tokens
+        </p>
+      )}
+      {statusOn != null && (
+        <p className={statusOn ? "ontology-banner on" : "ontology-banner off"}>{ontologyStatusText(statusOn)}</p>
+      )}
     </>
   );
 }
@@ -114,12 +144,33 @@ export default function App() {
   const q = useQa();
   const [question, setQuestion] = useState("");
   const [sideOpen, setSideOpen] = useState(true);
-  const [round, setRound] = useState<{ q: string } | null>(null);
+  const [ontologyOn, setOntologyOn] = useState(true);
+  const [round, setRound] = useState<{ q: string; ontologyEnabled: boolean } | null>(null);
   const [history, setHistory] = useState<PastTurn[]>([]);
+  /** 当前这轮已经结束，并且需要在它末尾显示本体状态。下一轮不会自动继承。 */
+  const [showLiveStatus, setShowLiveStatus] = useState(false);
   // macOS 中文输入法：选词回车会先结束组词，紧接着再来一次 Enter。这一拍不能当成发送。
   const imeLock = useRef(false);
+  const wasBusy = useRef(false);
+  const toggledDuringRound = useRef(false);
 
   useEffect(() => { q.loadModels(); }, []);
+
+  useEffect(() => {
+    if (wasBusy.current && !q.busy && round) {
+      if (history.length === 0 || toggledDuringRound.current) setShowLiveStatus(true);
+      else setShowLiveStatus(false);
+      toggledDuringRound.current = false;
+    }
+    wasBusy.current = q.busy;
+  }, [q.busy, round, history.length]);
+
+  const onOntology = (checked: boolean) => {
+    setOntologyOn(checked);
+    if (!round) return;
+    if (q.busy) toggledDuringRound.current = true;
+    else setShowLiveStatus(true);
+  };
 
   const submit = () => {
     const text = question.trim();
@@ -137,10 +188,15 @@ export default function App() {
         consensus: q.consensus,
         divergences: q.divergences,
         summary: q.summary,
+        tokens: q.tokens,
+        ontologyEnabled: round.ontologyEnabled,
+        statusOn: showLiveStatus ? ontologyOn : null,
       }]);
     }
-    setRound({ q: text });
-    q.ask(text);
+    setShowLiveStatus(false);
+    toggledDuringRound.current = false;
+    setRound({ q: text, ontologyEnabled: ontologyOn });
+    q.ask(text, ontologyOn);
     setQuestion("");
   };
 
@@ -156,7 +212,20 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <div className="brand">智能问数</div>
+        <div className="brand-block">
+          <div className="brand">智能问数</div>
+          <label className="ontology-switch">
+            本体
+            <input
+              type="checkbox"
+              role="switch"
+              aria-label="本体"
+              checked={ontologyOn}
+              disabled={q.busy}
+              onChange={(e) => onOntology(e.target.checked)}
+            />
+          </label>
+        </div>
         <div className="topbar-right">
           <ModelPicker models={q.models} model={q.model} onChange={q.setModel} disabled={q.busy} />
         </div>
@@ -170,6 +239,7 @@ export default function App() {
               <div className="welcome">
                 <h2>我是智能问数助手</h2>
                 <p>我能帮你查询23-25年中国新零售经营分析数据结果并进行分析，你可以试着问我。</p>
+                <p className={ontologyOn ? "ontology-banner on" : "ontology-banner off"}>{ontologyStatusText(ontologyOn)}</p>
                 <div className="examples">
                   <button onClick={() => setQuestion("2025年的销售额是多少？")}>2025年的销售额是多少？</button>
                   <button onClick={() => setQuestion("2025年1季度和2季度的销售额是多少，变化的原因是什么？")}>2025年1季度和2季度的销售额是多少，变化的原因是什么？</button>
@@ -178,17 +248,16 @@ export default function App() {
             )}
 
             {history.map((h, i) => (
-              <TurnThread key={i} question={h.question} error={h.error} busy={false}
-                timeline={h.timeline} dispatchAt={h.dispatchAt} agents={h.agents}
-                logs={h.logs} trace={h.trace} chatAnswer={h.chatAnswer}
-                consensus={h.consensus} divergences={h.divergences} summary={h.summary} />
+              <TurnThread key={i} {...h} busy={false} statusOn={h.statusOn} />
             ))}
 
             {round && (
               <TurnThread question={round.q} error={q.error} busy={q.busy}
                 timeline={q.timeline} dispatchAt={q.dispatchAt} agents={q.agents}
                 logs={q.logs} trace={q.trace} chatAnswer={q.chatAnswer}
-                consensus={q.consensus} divergences={q.divergences} summary={q.summary} />
+                consensus={q.consensus} divergences={q.divergences} summary={q.summary}
+                tokens={q.busy ? null : q.tokens} ontologyEnabled={round.ontologyEnabled}
+                statusOn={showLiveStatus && !q.busy ? ontologyOn : null} />
             )}
 
             {!q.keyOk && <div className="warn-box">未检测到 DEEPSEEK_API_KEY，请在后端 .env 配置后重启。</div>}
@@ -234,11 +303,6 @@ export default function App() {
                 <EvidenceAnchor evidences={q.evidences} />
               </section>
 
-              {q.tokens && (
-                <footer className="tokens">
-                  Tokens 输入 {q.tokens.prompt} · 输出 {q.tokens.completion} · 合计 {q.tokens.total}
-                </footer>
-              )}
             </div>
           )}
         </aside>

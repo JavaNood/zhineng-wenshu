@@ -1,6 +1,6 @@
-"""问数与专家共用的 ReAct 子图：agent →（sql / 打回 / 追问）→ agent，step≤60。
+"""问数 ReAct 子图：agent →（sql / 打回 / 追问）→ agent，step≤60。
 
-提示词正文从原 supervisor.QUERY_SYS / worker.WORKER_SYS 原样迁入，供本图节点使用。
+取数走官方 tool_calls。结论仍写在正文的 ```conclusion 里。
 """
 from __future__ import annotations
 from typing import TypedDict
@@ -12,31 +12,51 @@ from .. import llm
 from ..config import MAX_STEPS, RESULT_ROWS
 from ..schemas import Evidence
 from ..tools import sql_tool
+from ..tools.batch import classify, formula_of, plan_hit, run_readonly, schema_hit
+from ..tools.schemas import assistant_message, calls_to_pending, query_tools, tool_message, worker_tools
 from .runtime import GraphContext, current_cursor
-from .textutil import _action_before_sql, _extract_block, _extract_sql, _model_line, _rows_preview
+from .textutil import _extract_block, _model_line, _rows_preview
 
 
-# 提示词正文不改，只是随 ReAct 子图从 supervisor / worker 挪到这里。
 QUERY_SYS = """你是问数执行 Agent，根据目标查询标准指标。
 【工作方式】
-1. 需要取数时输出一条 ```sql（DuckDB 只读，表用英文别名，列名用中文原名）。
+1. 需要取数时调用 run_sql。一次一条 DuckDB 只读 SELECT，表用英文别名，列名用中文原名。不要在正文里写 SQL。
 2. 目标含多个时间期（如2025与2024、各季度）、多个指标或多个维度取值时，用一条 SQL 一次取回（按年/季 GROUP BY、或 CASE 对比），不要为每期/每值各跑一次。
-3. 拿到真实结果后再输出 ```conclusion：给出具体数值答案，注明口径与时间窗口；多期/多值要分别列出并给出对比。
+3. 拿到真实结果后，在正文输出 ```conclusion：给出具体数值答案，注明口径与时间窗口；多期/多值要分别列出并给出对比。
 【硬约束】
 - 未成功执行过任何 SQL、没有真实结果前，禁止输出 ```conclusion，禁止只复述口径或给"见查询结果"这类空话。
-- 只用本体标准指标口径，禁止编造数字；金额=SUM(实付金额)-SUM(退款金额)，订单量=COUNT(DISTINCT 订单ID)。
+- 口径以工具返回为准，禁止编造数字。
 - 只回答本查询点的数值事实；不要评价"数据不足/无法定位原因"，不要建议下钻、渠道拆分或进一步分析，归因由主 Agent 另行调度。
-- 时间过滤：orders.订单日期 可直接按年/季过滤；需要促销标记/标准年月时再 join d_date。"""
+- 关联和过滤以工具返回的关系与表结构为准。"""
 
-WORKER_SYS = """你是一位被派遣的分析专家子 Agent，严格按给定 Skill 的操作指引取数分析。
-【工作方式】
-1. 每一步只做一件事：需要取数时输出一条 DuckDB 只读 SQL（```sql 代码块），表用英文别名，列用中文原名；输出 SQL 前先用一句完整、明确的中文写明本步动作，格式"步骤N：<明确的查询对象 + 口径 + 时间/范围>"，例如"步骤一：分别统计2024与2025全年销售额并计算同比变化"。必须写清查什么、按什么口径、看哪个范围；禁止半句、禁止未闭合括号的残句、禁止只写"订单量）"这类碎片。
-2. 拿到 SQL 结果后继续下一步；数据不足可修正 SQL 重试（在 step 上限内）。
-3. 全部取数完成后，输出最终结论 ```conclusion 代码块：先用数据给出支撑判断，末尾以"## 该专家的主要结论"作为小标题，给出本视角下的一句话核心结论。
-【硬约束】
-- 未成功执行过任何 SQL、没有真实结果前，禁止输出 ```conclusion，禁止只复述口径或空泛判断。
-- 只用下方本体给定的标准指标口径，禁止自造指标或编造数字，结论必须基于真实 SQL 结果。
-- 时间过滤：orders.订单日期 可直接按年/季过滤；需要促销标记/标准年月时再 join d_date。"""
+def worker_sys(ontology_enabled: bool) -> str:
+    head = (
+        "你是一位被派遣的分析专家子 Agent，严格按给定 Skill 的操作指引取数分析。\n"
+        "先制定计划，再在执行中调用工具、观察结果，并可以修订尚未执行的步骤。\n"
+        "用接口提供的函数调用工具，不要在正文里写工具名、参数或 JSON。\n"
+        "一次回复最多调用 4 个函数。超过 4 个时，多出来的这一轮不会执行，要在下一次回复里继续。\n"
+        "写 SQL、以及按结果修订计划，不要和给它们提供输入的工具放在同一次回复里。\n"
+        "修订计划时单独输出 ```plan，只写尚未执行的步骤。要放弃剩余步骤就写 {\"steps\":[]}。\n"
+        "计划步骤只写要查的数据，不要把 resolve_certified_metric、read_sql_plan、describe_schema、read_entity 写成步骤。这些工具不占用计划勾选。\n"
+        "还有未执行步骤时不要写 ```conclusion。全部取数完成后再写：先用数据给出支撑判断，末尾以「## 该专家的主要结论」作为小标题。\n"
+        "未成功执行过任何 SQL 之前，禁止输出 ```conclusion。不要调用 list_skills、dispatch、report、finish。\n"
+    )
+    if ontology_enabled:
+        body = (
+            "本体访问开启。可以调用 read_entity、read_value_domain、read_relations、read_policies、"
+            "read_logical_dataset、resolve_certified_metric、read_sql_plan、describe_schema、run_sql。\n"
+            "口径和关联以工具返回为准。写 SQL 之前，更早的回复里必须已经成功调用 resolve_certified_metric 和 read_sql_plan。\n"
+            "可以按观察修订未执行步骤。\n"
+        )
+    else:
+        body = (
+            "本体访问已关闭。不能调用实体、值域、关系、策略、逻辑数据集、认证指标和 SQL 规划。\n"
+            "没有本体和认证指标，先调用 describe_schema 看物理表结构，再写 SQL。可以按观察修订未执行步骤。\n"
+        )
+    return head + body
+
+
+WORKER_SYS = worker_sys(True)
 
 
 class ReactState(TypedDict):
@@ -54,20 +74,25 @@ class ReactState(TypedDict):
     route: str
     sql: str
     step_action: str
+    pending_calls: list
+    metric_ready: bool
+    plan_ready: bool
+    schema_ready: bool
+    metric_formula: str
 
 
 def _empty_nudge(profile: str) -> str:
     if profile == "query":
         return ("你还没有成功取到任何数据。禁止只给口径或空结论；"
-                "请先输出 ```sql 取数，拿到真实结果后再 ```conclusion。")
+                "请先调用 run_sql 取数，拿到真实结果后再在正文输出 ```conclusion。")
     return ("你还没有成功取到任何数据。禁止只给口径或空泛判断；"
-            "请先输出 ```sql 取数，拿到真实结果后再 ```conclusion。")
+            "请先调用 run_sql 取数，拿到真实结果后再在正文输出 ```conclusion。")
 
 
 def _ask_nudge(profile: str) -> str:
     if profile == "query":
-        return "请输出 ```sql 或 ```conclusion。"
-    return "请输出 ```sql 取数，或在完成后输出 ```conclusion。"
+        return "请调用 run_sql，或在拿到结果后于正文输出 ```conclusion。不要在正文里写 SQL。"
+    return "请调用函数取数，或在完成后于正文输出 ```conclusion。不要在正文里写工具参数。"
 
 
 def _truncated_text(profile: str) -> str:
@@ -89,48 +114,53 @@ async def agent_node(state: ReactState, runtime: Runtime) -> dict:
     async def _reasoning(t: str):
         await emit({"type": "reasoning", "skill_id": skill_id, "text": t})
 
-    resp = await llm.chat_stream(state["messages"], model=state["model"], on_reasoning=_reasoning)
+    offered = query_tools() if profile == "query" else worker_tools(True)
+    resp = await llm.chat_stream(
+        state["messages"], model=state["model"], on_reasoning=_reasoning, tools=offered,
+    )
     usage = dict(state["usage"])
     for k in ("prompt", "completion", "total"):
         usage[k] += resp.get("usage", {}).get(k, 0)
-    content = resp.get("content", "")
-    messages = list(state["messages"]) + [{"role": "assistant", "content": content}]
-    sql = _extract_sql(content)
-    concl = _extract_block(content, "conclusion")
+    content = resp.get("content", "") or ""
+    tool_calls = list(resp.get("tool_calls") or [])
+    messages = list(state["messages"]) + [assistant_message(content, resp.get("reasoning") or "", tool_calls)]
+    pending = calls_to_pending(tool_calls)
+    concl = "" if pending else _extract_block(content, "conclusion")
+    action = _model_line(content) if content.strip() else None
 
-    if sql:
-        show, kind = sql, "sql"
-        action = _action_before_sql(content) if profile == "query" else _action_before_sql(content, sql)
-    elif concl:
+    if concl:
         show, kind = concl, "conclusion"
         action = _model_line(concl)
-    else:
+    elif content.strip():
         show, kind = content.strip()[:500], "think"
-        action = None
+    else:
+        show, kind = "", "think"
     if show:
         await emit({
             "type": "step_log", "skill_id": skill_id, "step": step,
             "kind": kind, "text": show, "action": action,
         })
-        # 问数循环里的自语思路同步进主时间线；专家思路只留在 step_log
+        # 问数循环里的正文同步进主时间线；工具参数留在 tool_calls，不写进这段文字。
         if profile == "query" and kind == "think" and show.strip():
             await emit({"type": "reasoning", "skill_id": "query", "text": show.strip()})
 
+    sql = next((str(item.get("sql") or "") for item in pending if item.get("tool") == "run_sql"), "")
     update: dict = {
         "messages": messages,
         "usage": usage,
         "step": step,
-        "sql": sql or "",
+        "sql": sql,
         "step_action": action or "",
+        "pending_calls": pending,
     }
-    if concl and state["evidences"]:
+    if pending:
+        update["route"] = "sql"
+    elif concl and state["evidences"]:
         update["route"] = "done"
         update["conclusion"] = concl
         update["status"] = "done"
     elif concl:
         update["route"] = "reject"
-    elif sql:
-        update["route"] = "sql"
     else:
         update["route"] = "ask"
     return update
@@ -152,32 +182,103 @@ def after_agent(state: ReactState) -> str:
 
 async def sql_node(state: ReactState, runtime: Runtime) -> dict:
     emit = runtime.context["emit"]
-    res = sql_tool.run_sql(state["sql"], cursor=current_cursor())
-    messages = list(state["messages"])
-    if res.get("error"):
-        if state["profile"] == "query":
-            messages.append({"role": "user", "content": f"SQL 报错：{res['error']}，修正后重试。"})
-        else:
-            messages.append({"role": "user",
-                             "content": f"SQL 执行报错：{res['error']}。请修正后重试，不要编造结果。"})
-        return {"messages": messages}
-    shown = res["rows"][:RESULT_ROWS]
-    ev = Evidence(metric=state["goal"], sql=res["sql"], row_count=res["row_count"],
-                  rows=shown)
-    evidences = list(state["evidences"]) + [ev.to_dict()]
-    await emit({
-        "type": "tool_call", "skill_id": state["skill_id"], "tool": "run_sql",
-        "title": (state.get("step_action") or "").strip() or "run_sql",
-        "detail": f"返回 {res['row_count']} 行", "sql": res["sql"],
-    })
-    preview = _rows_preview(shown, res["row_count"])
+    pending = list(state.get("pending_calls") or [])
+    if not pending and state.get("sql"):
+        pending = [{"tool": "run_sql", "sql": state["sql"], "call_id": "call_sql"}]
     if state["profile"] == "query":
-        messages.append({"role": "user",
-                         "content": f"结果（{res['row_count']}行）：\n{preview}\n给 ```conclusion。"})
-    else:
-        messages.append({"role": "user",
-                         "content": f"SQL 结果（{res['row_count']} 行）：\n{preview}\n继续下一步，或给出 ```conclusion。"})
-    return {"messages": messages, "evidences": evidences}
+        return await _query_sql(state, emit, pending)
+    return await _worker_sql(state, emit, pending)
+
+
+async def _query_sql(state: ReactState, emit, pending: list[dict]) -> dict:
+    messages = list(state["messages"])
+    evidences = list(state["evidences"])
+    for call in pending:
+        call_id = str(call.get("call_id") or "")
+        if call.get("tool") != "run_sql":
+            messages.append(tool_message(call_id, "未执行：问数执行只调用 run_sql"))
+            continue
+        res = sql_tool.run_sql(str(call.get("sql") or ""), cursor=current_cursor())
+        if res.get("error"):
+            messages.append(tool_message(call_id, f"SQL 报错：{res['error']}，修正后重试。"))
+            await emit({
+                "type": "tool_call", "skill_id": state["skill_id"], "tool": "run_sql",
+                "title": "run_sql", "detail": res["error"], "sql": str(call.get("sql") or ""),
+            })
+            continue
+        shown = res["rows"][:RESULT_ROWS]
+        ev = Evidence(metric=state["goal"], sql=res["sql"], row_count=res["row_count"], rows=shown)
+        evidences.append(ev.to_dict())
+        await emit({
+            "type": "tool_call", "skill_id": state["skill_id"], "tool": "run_sql",
+            "title": (state.get("step_action") or "").strip() or "run_sql",
+            "detail": f"返回 {res['row_count']} 行", "sql": res["sql"],
+        })
+        preview = _rows_preview(shown, res["row_count"])
+        messages.append(tool_message(
+            call_id, f"结果（{res['row_count']}行）：\n{preview}\n给 ```conclusion。",
+        ))
+    return {"messages": messages, "evidences": evidences, "pending_calls": []}
+
+
+async def _worker_sql(state: ReactState, emit, pending: list[dict]) -> dict:
+    decisions = classify(
+        pending, ontology_enabled=True, metric_ready=bool(state.get("metric_ready")),
+        plan_ready=bool(state.get("plan_ready")), schema_ready=bool(state.get("schema_ready")),
+        skills_listed=False, has_sql=bool(state.get("evidences")), dispatched=False,
+        allow_orchestrator=False,
+    )
+    messages = list(state["messages"])
+    evidences = list(state["evidences"])
+    formula = str(state.get("metric_formula") or "")
+    metric_ready = bool(state.get("metric_ready"))
+    plan_ready = bool(state.get("plan_ready"))
+    schema_ready = bool(state.get("schema_ready"))
+    for item in decisions:
+        tool = item["tool"]
+        name = str(tool.get("tool") or "")
+        call_id = str(tool.get("call_id") or "")
+        if not item["run"]:
+            messages.append(tool_message(call_id, "未执行：" + item["reason"]))
+            continue
+        if name == "run_sql":
+            res = sql_tool.run_sql(str(tool.get("sql") or ""), cursor=current_cursor())
+            if res.get("error"):
+                messages.append(tool_message(call_id, f"SQL 执行报错：{res['error']}。请修正后重试，不要编造结果。"))
+                continue
+            shown = res["rows"][:RESULT_ROWS]
+            ev = Evidence(metric=state["goal"], formula=formula, sql=res["sql"],
+                          row_count=res["row_count"], rows=shown)
+            evidences.append(ev.to_dict())
+            preview = _rows_preview(shown, res["row_count"])
+            messages.append(tool_message(
+                call_id, f"SQL 结果（{res['row_count']} 行）：\n{preview}\n继续下一步，或给出 ```conclusion。",
+            ))
+            await emit({
+                "type": "tool_call", "skill_id": state["skill_id"], "tool": "run_sql",
+                "title": "run_sql", "detail": f"返回 {res['row_count']} 行", "sql": res["sql"],
+            })
+            continue
+        body = run_readonly(tool)
+        messages.append(tool_message(call_id, body))
+        if name == "resolve_certified_metric":
+            got = formula_of(body)
+            if got:
+                metric_ready = True
+                formula = got
+        elif name == "read_sql_plan" and plan_hit(body):
+            plan_ready = True
+        elif name == "describe_schema" and schema_hit(body):
+            schema_ready = True
+    return {
+        "messages": messages,
+        "evidences": evidences,
+        "pending_calls": [],
+        "metric_ready": metric_ready,
+        "plan_ready": plan_ready,
+        "schema_ready": schema_ready,
+        "metric_formula": formula,
+    }
 
 
 async def reject_node(state: ReactState, runtime: Runtime) -> dict:
@@ -255,6 +356,11 @@ async def run_react(
             "route": "",
             "sql": "",
             "step_action": "",
+            "pending_calls": [],
+            "metric_ready": False,
+            "plan_ready": False,
+            "schema_ready": False,
+            "metric_formula": "",
         },
         context=context,
         config={"recursion_limit": REACT_RECURSION_LIMIT},

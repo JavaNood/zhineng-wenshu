@@ -215,7 +215,7 @@ export function useQa() {
     }
   }, []);
 
-  const ask = useCallback(async (question: string) => {
+  const ask = useCallback(async (question: string, ontologyEnabled = true) => {
     setBusy(true);
     setError(""); setChatAnswer(""); setMainAnswer("");
     setConsensus([]); setDivergences([]); setSummary(""); setEvidences([]);
@@ -226,7 +226,7 @@ export function useQa() {
     setTimeline([]);
     setDispatchAt(0);
     try {
-      const start = await startChat(question, model);
+      const start = await startChat(question, model, ontologyEnabled);
       closeRef.current = connectStream(start.session_id, handleEvent, () => setBusy(false));
     } catch (e: any) {
       setError(String(e));

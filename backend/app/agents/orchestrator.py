@@ -20,10 +20,7 @@ from .main_react import (
     initial_messages,
     main_turn,
     nudge_node,
-    ontology_node,
-    report_node,
-    skills_node,
-    sql_node,
+    tools_node,
 )
 from .runtime import GraphContext
 
@@ -36,7 +33,11 @@ class OrchestratorState(TypedDict):
     route: str
     pending: dict
     nudge: str
-    ontology_read: bool
+    ontology_enabled: bool
+    metric_ready: bool
+    plan_ready: bool
+    schema_ready: bool
+    metric_formula: str
     skills_listed: bool
     has_sql: bool
     reported: bool
@@ -77,16 +78,20 @@ def build_groups(points: list[IntentPoint], question: str) -> list[dict]:
     return groups
 
 
-def _initial(question: str, model: str) -> OrchestratorState:
+def _initial(question: str, model: str, ontology_enabled: bool = True) -> OrchestratorState:
     return {
         "question": question,
         "model": model,
-        "messages": initial_messages(question),
+        "messages": initial_messages(question, ontology_enabled),
         "step": 0,
         "route": "",
-        "pending": {},
+        "pending": [],
         "nudge": "",
-        "ontology_read": False,
+        "ontology_enabled": ontology_enabled,
+        "metric_ready": False,
+        "plan_ready": False,
+        "schema_ready": False,
+        "metric_formula": "",
         "skills_listed": False,
         "has_sql": False,
         "reported": False,
@@ -114,6 +119,7 @@ def fan_out(state: OrchestratorState):
             "question": state["question"],
             "model": state["model"],
             "known_facts_text": known,
+            "ontology_enabled": bool(state.get("ontology_enabled", True)),
             "ord": i,
         })
         for i, sid in enumerate(skills)
@@ -122,11 +128,17 @@ def fan_out(state: OrchestratorState):
 
 def after_main(state: OrchestratorState):
     route = state.get("route") or "finish"
-    if route == "dispatch":
-        return fan_out(state)
     if route == "stop":
         return "finish"
-    return route
+    if route in ("tools", "nudge"):
+        return route
+    return "finish"
+
+
+def after_tools(state: OrchestratorState):
+    if state.get("route") == "dispatch":
+        return fan_out(state)
+    return "main"
 
 
 async def worker_node(state: dict, runtime: Runtime) -> dict:
@@ -139,6 +151,7 @@ async def worker_node(state: dict, runtime: Runtime) -> dict:
         sub, usage = await executors.run_skill_worker(
             sid, state["goal"], state["question"], state["model"], emit, cursor,
             known_facts=state.get("known_facts_text") or "",
+            ontology_enabled=bool(state.get("ontology_enabled", True)),
             context=runtime.context,
         )
         packet = {"sub": sub.to_dict(), "usage": usage, "ord": state.get("ord", 0)}
@@ -185,21 +198,17 @@ async def finish_node(state: OrchestratorState, runtime: Runtime) -> dict:
 def _build():
     g = StateGraph(OrchestratorState, context_schema=GraphContext)
     g.add_node("main", main_turn)
-    g.add_node("ontology", ontology_node)
-    g.add_node("skills", skills_node)
-    g.add_node("sql", sql_node)
-    g.add_node("report", report_node)
+    g.add_node("tools", tools_node)
     g.add_node("nudge", nudge_node)
     g.add_node("worker", worker_node)
     g.add_node("collect_workers", collect_workers)
     g.add_node("finish", finish_node)
     g.add_edge(START, "main")
-    g.add_conditional_edges("main", after_main, [
-        "ontology", "skills", "sql", "report", "nudge", "finish", "worker", "collect_workers",
-    ])
-    for name in ("ontology", "skills", "sql", "report", "nudge", "collect_workers"):
-        g.add_edge(name, "main")
+    g.add_conditional_edges("main", after_main, ["tools", "nudge", "finish"])
+    g.add_conditional_edges("tools", after_tools, ["main", "worker", "collect_workers"])
+    g.add_edge("nudge", "main")
     g.add_edge("worker", "collect_workers")
+    g.add_edge("collect_workers", "main")
     g.add_edge("finish", END)
     return g.compile(name="qa-orchestrator")
 
@@ -211,8 +220,9 @@ OUTER_RECURSION_LIMIT = 200
 
 
 async def orchestrate(question: str, model: str, emit, session) -> None:
+    enabled = bool(getattr(session, "ontology_enabled", True))
     await GRAPH.ainvoke(
-        _initial(question, model),
+        _initial(question, model, enabled),
         context={"emit": emit, "session": session},
         config={
             "max_concurrency": MAX_PARALLEL,

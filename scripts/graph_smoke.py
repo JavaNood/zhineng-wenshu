@@ -26,11 +26,15 @@ from app.tools import sql_tool
 
 
 def _prompts_unchanged() -> None:
-    assert len(QUERY_SYS) == 498 and "data_map" not in QUERY_SYS
-    assert len(WORKER_SYS) == 552 and "data_map" not in WORKER_SYS
+    assert "data_map" not in QUERY_SYS and "口径以工具返回为准" in QUERY_SYS
+    assert WORKER_SYS.startswith("你是一位被派遣的分析专家") and "data_map" not in WORKER_SYS
+    assert "resolve_certified_metric" in WORKER_SYS and "一次回复最多调用 4 个函数" in WORKER_SYS
+    assert "```tools" not in WORKER_SYS and "```tools" not in MAIN_SYS
+    assert "run_sql" in QUERY_SYS and "```sql" not in QUERY_SYS
     assert len(MERGE_SYS) == 232 and MERGE_SYS.startswith("你是结果汇聚者")
     assert len(PLANNER_SYS) == 960 and PLANNER_SYS.startswith("你是智能问数系统的规划器")
     assert MAIN_SYS.startswith("你是智能问数的主 Agent")
+    assert "一次回复最多调用 4 个函数" in MAIN_SYS
 
 
 def _groups() -> None:
@@ -50,14 +54,36 @@ def _groups() -> None:
 
 def _graph_shape() -> None:
     names = set(orchestrator.GRAPH.get_graph().nodes)
-    assert {"main", "ontology", "skills", "sql", "report", "nudge", "worker",
-            "collect_workers", "finish"} <= names
+    assert {"main", "tools", "nudge", "worker", "collect_workers", "finish"} <= names
+    assert "ontology" not in names
     rnames = set(react_graph.REACT.get_graph().nodes)
     assert {"agent", "sql", "reject", "ask", "truncate"} <= rnames
 
 
-def _tool_block(preface: str, payload: dict) -> str:
-    return preface + "\n```tool\n" + json.dumps(payload, ensure_ascii=False) + "\n```"
+def _call(fake_seq: list[int], name: str, arguments: dict) -> dict:
+    fake_seq[0] += 1
+    return {
+        "id": f"call_{fake_seq[0]}",
+        "type": "function",
+        "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)},
+    }
+
+
+def _names(messages: list[dict]) -> list[str]:
+    names = []
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        for call in message.get("tool_calls") or []:
+            names.append((call.get("function") or {}).get("name") or "")
+    return names
+
+
+def _last_user(messages: list[dict]) -> str:
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            return message.get("content") or ""
+    return ""
 
 
 class _Fake:
@@ -65,69 +91,87 @@ class _Fake:
         self.worker_users: list[str] = []
         self.main_users: list[str] = []
         self.calls = 0
+        self._seq = [0]
 
-    async def __call__(self, messages, model=None, on_reasoning=None, on_content=None):
+    async def __call__(self, messages, model=None, on_reasoning=None, on_content=None, tools=None):
         self.calls += 1
         sys_msg = messages[0]["content"] if messages else ""
-        last = messages[-1]["content"] if messages else ""
+        last = messages[-1].get("content") or "" if messages else ""
         usage = {"prompt": 2, "completion": 1, "total": 3}
         if on_reasoning and sys_msg.startswith("你是智能问数的主 Agent"):
             await on_reasoning("本步思考。")
         if sys_msg.startswith("你是智能问数的主 Agent"):
+            assert tools and any(item["function"]["name"] == "run_sql" for item in tools)
             question = messages[1]["content"]
             self.main_users.append(last)
-            return {"content": self._main(question, last), "reasoning": "", "usage": usage}
+            content, calls = self._main(question, messages)
+            return {"content": content, "reasoning": "本步思考。", "tool_calls": calls, "usage": usage}
         if sys_msg.startswith("你是一位被派遣的分析专家"):
+            user_blob = "\n".join(m.get("content") or "" for m in messages if m.get("role") == "user")
+            if "计划已记录" in user_blob or "计划已修订" in user_blob:
+                assert tools, "执行阶段必须带上 tools"
+            else:
+                assert not tools
             self.worker_users.append(last)
-            return {"content": self._worker(last), "reasoning": "", "usage": usage}
-        return {"content": "", "reasoning": "", "usage": usage}
+            content, calls = self._worker(messages)
+            return {"content": content, "reasoning": "", "tool_calls": calls, "usage": usage}
+        return {"content": "", "reasoning": "", "tool_calls": [], "usage": usage}
 
-    def _main(self, question: str, last: str) -> str:
+    def _main(self, question: str, messages: list[dict]) -> tuple[str, list[dict]]:
         why = any(w in question for w in ("为什么", "原因", "下降", "组合"))
-        if "你好" in question and not last.startswith("工具"):
-            return _tool_block("先直接回答。", {"tool": "finish", "summary": "你好，需要问数直接说。"})
-        if not last.startswith("工具"):
-            return _tool_block("先看销售额口径。", {"tool": "read_ontology", "metric": "销售额"})
-        if last.startswith("工具 read_ontology"):
-            return _tool_block(
-                "按本体口径查销售额。",
-                {"tool": "run_sql", "sql": "SELECT SUM(实付金额)-SUM(退款金额) AS sales FROM orders"},
-            )
-        if last.startswith("工具 run_sql"):
-            return _tool_block("把查到的数值告诉用户。", {"tool": "report", "text": "销售额已取到。"})
-        if last.startswith("工具 report"):
-            if why:
-                return _tool_block("数值已经有了，接下来看有哪些专家。", {"tool": "list_skills"})
-            return _tool_block("数值已经回答完。", {"tool": "finish", "summary": "销售额已取到。"})
-        if last.startswith("工具 list_skills"):
+        names = _names(messages)
+        last_user = _last_user(messages)
+        if last_user.startswith("工具 dispatch"):
+            return "专家结论已经齐了，开始汇总。", [_call(self._seq, "finish", {
+                "summary": "两位专家都指向结构变化。",
+                "consensus": [{"point": "结构变化", "support": ["value-price-breakdown", "customer-refund"]}],
+                "divergences": [],
+            })]
+        if "你好" in question and not names:
+            return "先直接回答。", [_call(self._seq, "finish", {"summary": "你好，需要问数直接说。"})]
+        if "resolve_certified_metric" not in names:
+            return "先对齐认证指标和 SQL 规划。", [
+                _call(self._seq, "resolve_certified_metric", {"metric": "销售额"}),
+                _call(self._seq, "read_sql_plan", {"metric": "销售额"}),
+            ]
+        if "run_sql" not in names:
+            return "按认证口径查销售额。", [_call(self._seq, "run_sql", {
+                "sql": "SELECT SUM(实付金额)-SUM(退款金额) AS sales FROM orders",
+            })]
+        if "report" not in names:
+            return "把查到的数值告诉用户。", [_call(self._seq, "report", {"text": "销售额已取到。"})]
+        if why and "list_skills" not in names:
+            return "数值已经有了，接下来看有哪些专家。", [_call(self._seq, "list_skills", {})]
+        if why and "dispatch" not in names:
             skills = (
                 ["value-price-breakdown", "seasonality-diagnosis"]
                 if "组合" in question
                 else ["value-price-breakdown", "customer-refund"]
             )
-            return _tool_block(
-                "选两个互补的专家来解释原因。",
-                {"tool": "dispatch", "skills": skills, "goal": "解释销售额下降"},
-            )
-        if last.startswith("工具 dispatch"):
-            return _tool_block("专家结论已经齐了，开始汇总。", {
-                "tool": "finish",
-                "summary": "两位专家都指向结构变化。",
-                "consensus": [{"point": "结构变化", "support": ["value-price-breakdown", "customer-refund"]}],
-                "divergences": [],
-            })
-        return _tool_block("先看销售额口径。", {"tool": "read_ontology", "metric": "销售额"})
+            return "选两个互补的专家来解释原因。", [_call(self._seq, "dispatch", {
+                "skills": skills, "goal": "解释销售额下降",
+            })]
+        return "数值已经回答完。", [_call(self._seq, "finish", {"summary": "销售额已取到。"})]
 
-    def _worker(self, last: str) -> str:
-        if "先制定计划" in last:
+    def _worker(self, messages: list[dict]) -> tuple[str, list[dict]]:
+        last = messages[-1].get("content") or ""
+        if messages[-1].get("role") == "user" and "先制定计划" in last:
             return (
                 "```plan\n"
                 '{"steps":[{"n":1,"action":"按渠道对比两期销售额并计算差额"},'
                 '{"n":2,"action":"按门店列出销售额下降最多的前十家"}]}\n```'
-            )
-        if "计划中的取数都已完成" in last:
-            return "```conclusion\n销售额见上方查询。\n## 该专家的主要结论\n销售额已取到。\n```"
-        return "```sql\nSELECT SUM(实付金额)-SUM(退款金额) AS sales FROM orders\n```"
+            ), []
+        if any("计划中的取数都已完成" in (m.get("content") or "") for m in messages):
+            return "```conclusion\n销售额见上方查询。\n## 该专家的主要结论\n销售额已取到。\n```", []
+        names = _names(messages)
+        if "resolve_certified_metric" not in names:
+            return "先取口径和规划。", [
+                _call(self._seq, "resolve_certified_metric", {"metric": "销售额"}),
+                _call(self._seq, "read_sql_plan", {"metric": "销售额"}),
+            ]
+        return "按计划查这一步。", [_call(self._seq, "run_sql", {
+            "sql": "SELECT SUM(实付金额)-SUM(退款金额) AS sales FROM orders",
+        })]
 
 
 async def _run(question: str, fake: _Fake) -> tuple[list[dict], object]:
@@ -187,7 +231,8 @@ async def _merged_query(fake: _Fake) -> None:
     events, _session = await _run("请看两年销售额", fake)
     assert sum(1 for e in events if e["type"] == "query_answer") == 1
     onto_at = next(i for i, e in enumerate(events)
-                   if e["type"] == "tool_call" and e.get("tool") == "read_ontology")
+                   if e["type"] == "tool_call" and e.get("tool") == "resolve_certified_metric"
+                   and e.get("skill_id") == "main")
     sql_at = next(i for i, e in enumerate(events)
                   if e["type"] == "tool_call" and e.get("tool") == "run_sql" and e.get("skill_id") == "main")
     assert events[onto_at]["skill_id"] == "main"
@@ -244,7 +289,9 @@ async def _query_then_analysis(fake: _Fake) -> None:
         "value-price-breakdown", "seasonality-diagnosis"]
     q_at = next(i for i, e in enumerate(events) if e["type"] == "query_answer")
     a_at = next(i for i, e in enumerate(events) if e["type"] == "agent_start")
-    onto_at = next(i for i, e in enumerate(events) if e["type"] == "tool_call" and e.get("tool") == "read_ontology")
+    onto_at = next(i for i, e in enumerate(events)
+                   if e["type"] == "tool_call" and e.get("tool") == "resolve_certified_metric"
+                   and e.get("skill_id") == "main")
     assert onto_at < q_at < a_at
 
 
@@ -272,9 +319,9 @@ async def _isolated_failure(fake: _Fake) -> None:
 async def _step_cap() -> None:
     calls = {"n": 0}
 
-    async def think(messages, model=None, on_reasoning=None, on_content=None):
+    async def think(messages, model=None, on_reasoning=None, on_content=None, tools=None):
         calls["n"] += 1
-        return {"content": "仍在思考下一步。", "reasoning": "",
+        return {"content": "仍在思考下一步。", "reasoning": "", "tool_calls": [],
                 "usage": {"prompt": 1, "completion": 1, "total": 2}}
 
     llm.chat_stream = think
@@ -296,6 +343,40 @@ async def _step_cap() -> None:
     assert usage["total"] == 120
 
 
+async def _query_react() -> None:
+    async def emit(_ev):
+        return None
+
+    async def fake(messages, model=None, on_reasoning=None, on_content=None, tools=None):
+        assert tools and [item["function"]["name"] for item in tools] == ["run_sql"]
+        names = _names(messages)
+        if "run_sql" not in names:
+            return {
+                "content": "先查一行。",
+                "reasoning": "想一下。",
+                "tool_calls": [_call([0], "run_sql", {"sql": "SELECT 1 AS n"})],
+                "usage": {"prompt": 1, "completion": 1, "total": 2},
+            }
+        assert any(m.get("role") == "tool" for m in messages)
+        assistant = next(m for m in messages if m.get("role") == "assistant")
+        assert "reasoning_content" in assistant
+        assert assistant.get("tool_calls")
+        return {
+            "content": "```conclusion\n结果是 1。\n```",
+            "reasoning": "可以收口。",
+            "tool_calls": [],
+            "usage": {"prompt": 1, "completion": 1, "total": 2},
+        }
+
+    llm.chat_stream = fake
+    sub, _usage = await executors.run_query_point(
+        "一行", "查一行", "deepseek-chat", emit, sql_tool.new_cursor(),
+    )
+    assert sub.status == "done"
+    assert "结果是 1" in sub.conclusion
+    assert sub.evidences and sub.evidences[0].row_count == 1
+
+
 async def main() -> None:
     _prompts_unchanged()
     _groups()
@@ -309,6 +390,7 @@ async def main() -> None:
         await _query_then_analysis(_Fake())
         await _isolated_failure(_Fake())
         await _step_cap()
+        await _query_react()
     finally:
         llm.chat_stream = original
     print("GRAPH SMOKE PASS")

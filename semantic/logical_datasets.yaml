@@ -1,0 +1,105 @@
+# 业务语义层：逻辑数据集。列名与类型来自现有表头。
+logical_datasets:
+  - id: orders
+    entity: 订单
+    file: fact_订单.csv
+    grain: 一行一个订单
+    fields:
+      - {name: 订单ID, type: varchar}
+      - {name: 订单日期, type: date}
+      - {name: 订单时间, type: varchar}
+      - {name: 客户ID, type: varchar}
+      - {name: 门店ID, type: varchar}
+      - {name: 销售渠道, type: varchar}
+      - {name: 支付方式, type: varchar}
+      - {name: 订单状态, type: varchar}
+      - {name: 商品金额, type: double}
+      - {name: 折扣金额, type: double}
+      - {name: 运费, type: double}
+      - {name: 实付金额, type: double}
+      - {name: 退款金额, type: double}
+      - {name: 成本金额, type: double}
+      - {name: 毛利额, type: double}
+      - {name: 是否新客首单, type: varchar}
+
+  - id: items
+    entity: 订单明细
+    file: fact_订单明细.csv
+    grain: 一行一个订单商品行
+    fields:
+      - {name: 订单明细ID, type: varchar}
+      - {name: 订单ID, type: varchar}
+      - {name: 商品ID, type: varchar}
+      - {name: 数量, type: int}
+      - {name: 成交单价, type: double}
+      - {name: 成交金额, type: double}
+      - {name: 折扣金额, type: double}
+      - {name: 成本金额, type: double}
+      - {name: 毛利额, type: double}
+
+  - id: target
+    entity: 月度目标
+    file: fact_月度目标.csv
+    grain: 一行一个门店一个月的目标
+    fields:
+      - {name: 年月, type: varchar}
+      - {name: 门店ID, type: varchar}
+      - {name: 销售目标, type: double}
+      - {name: 毛利目标, type: double}
+      - {name: 订单量目标, type: double}
+
+  - id: d_date
+    entity: 日期
+    file: dim_日期.csv
+    grain: 一行一天
+    fields:
+      - {name: 日期, type: date}
+      - {name: 年, type: int}
+      - {name: 季度, type: varchar}
+      - {name: 月, type: int}
+      - {name: 年月, type: varchar}
+      - {name: 周, type: int}
+      - {name: 星期, type: varchar}
+      - {name: 是否周末, type: varchar}
+      - {name: 是否月初, type: varchar}
+      - {name: 促销标记, type: varchar}
+
+  - id: d_cust
+    entity: 客户
+    file: dim_客户.csv
+    grain: 一行一个客户
+    fields:
+      - {name: 客户ID, type: varchar}
+      - {name: 客户等级, type: varchar}
+      - {name: 性别, type: varchar}
+      - {name: 注册省份, type: varchar}
+      - {name: 注册城市, type: varchar}
+      - {name: 注册日期, type: date}
+      - {name: 是否企业客户, type: varchar}
+
+  - id: d_store
+    entity: 门店
+    file: dim_门店.csv
+    grain: 一行一个门店
+    fields:
+      - {name: 门店ID, type: varchar}
+      - {name: 门店名称, type: varchar}
+      - {name: 大区, type: varchar}
+      - {name: 省份, type: varchar}
+      - {name: 城市, type: varchar}
+      - {name: 渠道类型, type: varchar}
+      - {name: 开业日期, type: date}
+
+  - id: d_prod
+    entity: 商品
+    file: dim_商品.csv
+    grain: 一行一个商品
+    fields:
+      - {name: 商品ID, type: varchar}
+      - {name: 商品名称, type: varchar}
+      - {name: 一级类目, type: varchar}
+      - {name: 二级类目, type: varchar}
+      - {name: 三级类目, type: varchar}
+      - {name: 品牌, type: varchar}
+      - {name: 标价, type: double}
+      - {name: 成本价, type: double}

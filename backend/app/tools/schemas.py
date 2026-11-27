@@ -74,7 +74,7 @@ _DISPATCH = _fn(
     "不要把融合专家和他的父专家或更上层专家派在同一轮。有 SQL 结果时必须先 report。",
     {
         "skills": {"type": "array", "items": {"type": "string"}, "description": "skill_id 列表"},
-        "goal": _str("这一次要专家回答的问题"),
+        "goal": _str("全体专家共用的问题，只含用户点名的指标、时间和要解释的变化。不要写渠道、大区、门店、季节、类目、品牌等某一位专家的拆法。"),
     },
     ["skills", "goal"],
 )

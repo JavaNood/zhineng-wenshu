@@ -1,4 +1,4 @@
-"""问数 ReAct 子图：agent →（sql / 打回 / 追问）→ agent，step≤60。
+"""问数 ReAct 子图：agent →（sql / 打回 / 追问）→ agent，step≤30。
 
 取数走官方 tool_calls。结论仍写在正文的 ```conclusion 里。
 """
@@ -9,7 +9,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 
 from .. import llm
-from ..config import MAX_STEPS, RESULT_ROWS
+from ..config import MAX_STEPS, PLAN_SOFT, PLAN_STEPS, RESULT_ROWS
 from ..schemas import Evidence
 from ..tools import sql_tool
 from ..tools.batch import classify, formula_of, plan_hit, run_readonly, schema_hit
@@ -32,11 +32,26 @@ QUERY_SYS = """你是问数执行 Agent，根据目标查询标准指标。
 def worker_sys(ontology_enabled: bool) -> str:
     head = (
         "你是一位被派遣的分析专家子 Agent，严格按给定 Skill 的操作指引取数分析。\n"
+        "分析目标是全体专家共用的问题，只说明指标、时间和要解释的变化，不是你的任务清单。计划只写你的技能方法里、并且这道题需要的取数。技能里没有的角度不要写进计划，也不要写进结论。\n"
         "先制定计划，再在执行中调用工具、观察结果，并可以修订尚未执行的步骤。\n"
         "用接口提供的函数调用工具，不要在正文里写工具名、参数或 JSON。\n"
         "一次回复最多调用 4 个函数。超过 4 个时，多出来的这一轮不会执行，要在下一次回复里继续。\n"
         "写 SQL、以及按结果修订计划，不要和给它们提供输入的工具放在同一次回复里。\n"
-        "修订计划时单独输出 ```plan，只写尚未执行的步骤。修订不能让总步数超过第一次收下的计划，已完成的步骤不要再写进去。要放弃剩余步骤就写 {\"steps\":[]}。步骤都完成后直接写 ```conclusion，不要再追加步骤。\n"
+        "修订计划时单独输出 ```plan，只写尚未执行的步骤。可以新增、改写或删除这些步骤，也可以写 {\"steps\":[]} 放弃剩余步骤。计划控制在 "
+        + str(PLAN_SOFT)
+        + " 步以内，最多 "
+        + str(PLAN_STEPS)
+        + " 步，已完成的步骤不要再写进去。超过 "
+        + str(PLAN_STEPS)
+        + " 步的整份计划不会收下。做完 "
+        + str(PLAN_SOFT)
+        + " 步就建议收拢；已经写在计划里的可以做完，也可以再追加，总数到 "
+        + str(PLAN_STEPS)
+        + " 步为止。第 "
+        + str(PLAN_STEPS)
+        + " 步完成后只写 ```conclusion，有结果支撑的判断写上，没有结果的点不写。当前计划的步骤都已有查询结果、总数还没到 "
+        + str(PLAN_STEPS)
+        + " 时，不要直接查询，先用 ```plan 追加步骤，下一回复再查。同一次回复里，查询不能多于还没执行的步骤。数已经够回答问题时，也可以不必做完每一步，直接写 ```conclusion。\n"
         "计划步骤只写要查的数据，不要把 resolve_certified_metric、read_sql_plan、describe_schema、read_entity 写成步骤。这些工具不占用计划勾选。\n"
         "计划只写这个问题要回答的取数。技能里的其余下钻不是必做清单，和本题无关的不要写进计划。指标用问题点名的那个，技能里的销售额、毛利额只是例子。\n"
         "问题要求的数已经取到后就写 ```conclusion，不必做完技能里的每一条。先用数据给出支撑判断，末尾以「## 该专家的主要结论」作为小标题。结论写判断和依据。多项数字对照时，可以用 Markdown 表格，也可以写成句子，由你判断哪种更好读，不必每次都画表。不要写「分析已完成」「没有剩余步骤」这类执行状态。\n"
@@ -327,7 +342,7 @@ def _build_react():
 
 REACT = _build_react()
 
-# 60 步里每步最多 agent + sql 两个超步，再留余量，避免先撞上图的递归上限。
+# 30 步里每步最多 agent + sql 两个超步，再留余量，避免先撞上图的递归上限。
 REACT_RECURSION_LIMIT = MAX_STEPS * 4 + 16
 
 

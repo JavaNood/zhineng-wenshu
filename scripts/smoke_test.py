@@ -10,10 +10,13 @@ from app.semantic import loader as sem
 from app.skills import loader as skilllib
 from app.skills import files as skillfiles
 from app.agents.main_react import reject_dispatch
-from app.agents.fusion import validate_fuse, validate_rename
+from app.agents.fusion import title_problem, validate_fuse, validate_rename
 
 
 def _session_skill_roundtrip() -> None:
+    assert title_problem("量价拆解与季节节奏归因专家")
+    assert title_problem("量价与季节归因专家-小王")
+    assert title_problem("量价与季节归因专家-小吴") == ""
     session_id = "smoke-session"
     try:
         skillfiles.write_session_skill(

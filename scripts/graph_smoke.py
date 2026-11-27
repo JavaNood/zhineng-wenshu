@@ -30,7 +30,11 @@ def _prompts_unchanged() -> None:
     assert WORKER_SYS.startswith("你是一位被派遣的分析专家") and "data_map" not in WORKER_SYS
     assert "resolve_certified_metric" in WORKER_SYS and "一次回复最多调用 4 个函数" in WORKER_SYS
     assert "```tools" not in WORKER_SYS and "```tools" not in MAIN_SYS
-    assert "不能让总步数超过第一次收下的计划" in WORKER_SYS
+    assert "可以新增、改写或删除" in WORKER_SYS
+    assert "控制在 6 步以内，最多 10 步" in WORKER_SYS
+    assert "不是你的任务清单" in WORKER_SYS
+    assert "不要把某一位专家的拆法写进 goal" in MAIN_SYS
+    assert "不能让总步数超过第一次收下的计划" not in WORKER_SYS
     assert "run_sql" in QUERY_SYS and "```sql" not in QUERY_SYS
     assert len(MERGE_SYS) == 232 and MERGE_SYS.startswith("你是结果汇聚者")
     assert len(PLANNER_SYS) == 960 and PLANNER_SYS.startswith("你是智能问数系统的规划器")
@@ -109,7 +113,12 @@ class _Fake:
             return {"content": content, "reasoning": "本步思考。", "tool_calls": calls, "usage": usage}
         if sys_msg.startswith("你是一位被派遣的分析专家"):
             user_blob = "\n".join(m.get("content") or "" for m in messages if m.get("role") == "user")
-            if "计划已记录" in user_blob or "计划已修订" in user_blob:
+            blob = "\n".join(
+                m.get("content") or "" for m in messages if m.get("role") != "system"
+            )
+            if "取数都已完成" in blob:
+                assert not tools
+            elif "计划已记录" in user_blob or "计划已修订" in user_blob:
                 assert tools, "执行阶段必须带上 tools"
             else:
                 assert not tools
@@ -242,10 +251,13 @@ async def _merged_query(fake: _Fake) -> None:
     assert onto_at < sql_at
     assert any(e["type"] == "reasoning" and i < onto_at for i, e in enumerate(events))
     assert any(e["type"] == "act" and i < onto_at for i, e in enumerate(events))
-    answer = next(e for e in events if e["type"] == "query_answer")
+    answer_at = next(i for i, e in enumerate(events) if e["type"] == "query_answer")
+    answer = events[answer_at]
     assert "销售额" in answer["text"]
     assert answer["evidences"]
     assert not any(e["type"] == "agent_start" for e in events)
+    assert not any(e["type"] == "reasoning" and i > answer_at for i, e in enumerate(events))
+    assert events[answer_at + 1]["type"] == "tokens"
 
 
 async def _analysis(fake: _Fake) -> None:
@@ -337,12 +349,12 @@ async def _step_cap() -> None:
         "value-price-breakdown", "解释下降", "为什么下降", "deepseek-chat",
         emit, sql_tool.new_cursor(),
     )
-    assert calls["n"] == MAX_STEPS == 60
+    assert calls["n"] == MAX_STEPS == 30
     assert sub.status == "truncated"
     assert sub.conclusion == "达到 step 上限，结论不完整（已中止，不伪造完成）。"
     assert sub.evidences == []
     assert sum(1 for e in events if e["type"] == "step_log") == 0
-    assert usage["total"] == 120
+    assert usage["total"] == 60
 
 
 async def _query_react() -> None:
@@ -388,12 +400,12 @@ def _plan_revision() -> None:
         {"n": 3, "action": "按是否企业客户对比两期销售额"},
         {"n": 4, "action": "按订单状态对比两期退款金额"},
     ]
-    cap = len(plan)
+    cap = 20
     grown = plan + [{"n": 5, "action": "按促销标记交叉客户等级"}]
-    kept, note = _revise_plan(plan, 4, grown, cap)
-    assert kept == plan
-    assert "取数都已完成" in note
-    assert "不要再追加" in note
+    extended, note = _revise_plan(plan, 4, grown, cap)
+    assert [s["action"] for s in extended] == [s["action"] for s in plan] + ["按促销标记交叉客户等级"]
+    assert note.startswith("计划已修订")
+    assert "按促销标记交叉客户等级" in note
 
     same, note = _revise_plan(plan, 2, plan, cap)
     assert [s["action"] for s in same] == [s["action"] for s in plan]
@@ -415,14 +427,49 @@ def _plan_revision() -> None:
     assert note.startswith("计划已修订")
 
     longer = rewritten + [{"n": 5, "action": "再加一步促销交叉"}]
-    held, note = _revise_plan(plan, 2, longer, cap)
+    added, note = _revise_plan(plan, 2, longer, cap)
+    assert [s["action"] for s in added] == [
+        "按客户等级对比两期销售额",
+        "按是否新客首单对比两期销售额",
+        "改写后的企业客户对照",
+        "改写后的退款对照",
+        "再加一步促销交叉",
+    ]
+    assert note.startswith("计划已修订")
+
+    held, note = _revise_plan(plan, 2, longer, 4)
     assert held == plan
-    assert "不能加长" in note
+    assert "不能再新增" in note
     assert "按是否企业客户对比两期销售额" in note
 
     dropped, note = _revise_plan(plan, 2, [], cap)
     assert [s["action"] for s in dropped] == [s["action"] for s in plan[:2]]
     assert "取数都已完成" in note
+
+    from app.agents.plan_execute import PLAN_STEPS, _plan_steps, _take_conclusion
+    assert PLAN_STEPS == 10
+    too_long = "```plan\n{\"steps\":[" + ",".join(
+        '{"n":%d,"action":"按维度%d对比两期销售额"}' % (i, i) for i in range(1, 12)
+    ) + "]}\n```"
+    parsed = _plan_steps(too_long)
+    assert parsed is not None and len(parsed) == 11
+    held_all, note = _revise_plan(plan, 0, parsed, PLAN_STEPS)
+    assert held_all == plan
+    assert "不能再新增" in note
+    dsml = '<｜｜DSML｜｜ invoke name="run_sql"> SELECT 1'
+    assert _take_conclusion(dsml, True) == ""
+    assert _take_conclusion("SELECT 1", True) == ""
+    assert "团购" in _take_conclusion(
+        "```conclusion\n增长来自企业团购。\n## 该专家的主要结论\n增长来自团购。\n```",
+        False,
+    )
+    mixed = (
+        "量价几乎各占一半，订单量与客单价同向小幅上升，没有单一因素主导。"
+        "\n## 该专家的主要结论\n增长来自企业团购。\n"
+        "```plan\n{\"steps\":[{\"n\":6,\"action\":\"再按渠道拆开两期销售额\"}]}\n```"
+    )
+    assert "企业团购" in _take_conclusion(mixed, True)
+    assert _take_conclusion(mixed, False) == ""
 
 
 async def main() -> None:

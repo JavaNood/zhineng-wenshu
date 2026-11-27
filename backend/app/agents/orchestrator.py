@@ -138,6 +138,8 @@ def after_main(state: OrchestratorState):
 def after_tools(state: OrchestratorState):
     if state.get("route") == "dispatch":
         return fan_out(state)
+    if state.get("route") == "stop":
+        return "finish"
     return "main"
 
 
@@ -212,7 +214,7 @@ def _build():
     g.add_node("finish", finish_node)
     g.add_edge(START, "main")
     g.add_conditional_edges("main", after_main, ["tools", "nudge", "finish"])
-    g.add_conditional_edges("tools", after_tools, ["main", "worker", "collect_workers"])
+    g.add_conditional_edges("tools", after_tools, ["main", "worker", "collect_workers", "finish"])
     g.add_edge("nudge", "main")
     g.add_edge("worker", "collect_workers")
     g.add_edge("collect_workers", "main")
@@ -222,7 +224,7 @@ def _build():
 
 GRAPH = _build()
 
-# 主循环每轮最多两个超步，再加上最多 3 个专家；真正的 60 步在专家计划执行里。
+# 主循环每轮最多两个超步，再加上最多 3 个专家；真正的 30 步在专家计划执行里。
 OUTER_RECURSION_LIMIT = 200
 
 

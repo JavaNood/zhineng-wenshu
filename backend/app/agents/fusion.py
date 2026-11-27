@@ -1,5 +1,6 @@
 """回答结束后的融合。一次函数调用产出技能卡，父专家和祖先由代码写入文件。"""
 from __future__ import annotations
+import re
 
 from .. import llm
 from ..skills import files as skillfiles
@@ -19,16 +20,19 @@ _PROPOSE = {
         "parameters": {
             "type": "object",
             "properties": {
-                "title": {"type": "string", "description": "专家标题，包含职责和称呼"},
+                "title": {
+                    "type": "string",
+                    "description": "写成「职责专家-小某」，例如「量价与季节归因专家-小吴」。称呼是小加一个汉字，不要用小王、小黄、小李、小陈、小赵、小周。",
+                },
                 "description": {"type": "string", "description": "擅长什么、何时使用、何时不用"},
                 "trigger": {"type": "string"},
                 "expert_role": {"type": "string"},
                 "instructions": {
                     "type": "string",
-                    "description": "Markdown 分析步骤。先沿用一条主线，另一条作为补充校验。不要把两份步骤原样接在一起。步骤控制在 6 步以内，使用认证指标和已有表列。",
+                    "description": "分析师的取数方法，不是报告目录。先认指标，计划只覆盖这道题。一条主线，其余检查写成看到什么才加一步。不要写给经营含义或输出报告。6 步以内。",
                 },
-                "output_schema": {"type": "string"},
-                "validation": {"type": "string"},
+                "output_schema": {"type": "string", "description": "怎样算把变化解释清楚，不要列必做表格"},
+                "validation": {"type": "string", "description": "本题要核对的判断，不要抄父技能的全部验收项"},
             },
             "required": list(_FIELDS),
         },
@@ -37,11 +41,35 @@ _PROPOSE = {
 
 _FUSE_SYS = """你负责把若干分析专家融成一位新的分析专家。
 调用 propose_skill 提交技能卡。不要把技能卡写在正文里。
-新专家和现有专家是同一结构：何时使用、分析步骤、产出、校验。
-步骤是一条可执行的顺序：先沿用其中一条主线，其余专家的检查作为补充。不要把几份步骤原样拼接。
+新专家是一位分析师的工作方法，不是一份必做报告目录。
+title 必须写成「职责专家-小某」，和现有专家一样带称呼。例如：量价与季节归因专家-小吴。称呼是「小」加一个汉字，放在连字符后面。不要用已经有的称呼：小王、小黄、小李、小陈、小赵、小周。description 用同一个标题开头，写擅长什么、何时使用、何时不用。
+instructions 只写取数方法，用 Markdown 编号，控制在 6 步以内：
+1. 先认指标。分析对象是问题点名的指标，父技能里的销售额只是例子。
+2. 计划只覆盖这道题。下面的下钻是可用方法，不是每次都要做完的清单。
+3. 主线：沿用其中一条父专家的主线，写成这道题要查什么。
+4. 补充：其余父专家的检查写成「看到什么结果才加一步」，不要默认全做。
+不要把几份步骤原样拼接。不要写「给经营含义」「输出报告」这种写作步骤，结论由分析师在查完后自己写。
 步骤里使用调用方给出的指标和表列，不要发明表或口径。
+output_schema 写怎样算把变化解释清楚，不要列必做表格。
+validation 只写本题实际要核对的判断，不要把父技能的验收项全部抄进来。
 父专家由系统写入，不要在参数里指定父专家。
 """
+
+_TAKEN_NAMES = ("小王", "小黄", "小李", "小陈", "小赵", "小周")
+_TITLE_NAME = re.compile(r"专家-(小.)$")
+
+
+def title_problem(title: str) -> str:
+    """标题要像现有专家：职责专家-小某，且称呼不和六位基础专家重复。"""
+    matched = _TITLE_NAME.search((title or "").strip())
+    if not matched:
+        return (
+            "title 要写成「职责专家-小某」，例如「量价与季节归因专家-小吴」。"
+            "称呼是小加一个汉字，放在连字符后面。"
+        )
+    if matched.group(1) in _TAKEN_NAMES:
+        return "这个称呼已经有专家在用。请换一个小字称呼，不要用小王、小黄、小李、小陈、小赵、小周。"
+    return ""
 
 
 def build_fuse_ask(session) -> dict | None:
@@ -182,7 +210,8 @@ async def run_fusion(session, emit) -> None:
         resp = await llm.chat_stream(messages, model=session.model, tools=[_PROPOSE])
         session.add_tokens(resp.get("usage") or {})
         proposal = _proposal(resp.get("tool_calls") or [])
-        if proposal and not _missing(proposal):
+        name_problem = title_problem(str(proposal.get("title") or "")) if proposal else ""
+        if proposal and not _missing(proposal) and not name_problem:
             break
         messages.append(assistant_message(
             resp.get("content") or "",
@@ -191,18 +220,16 @@ async def run_fusion(session, emit) -> None:
         ))
         calls = resp.get("tool_calls") or []
         if calls:
+            reason = name_problem or "字段不完整。请重新调用 propose_skill，title、description、trigger、expert_role、instructions、output_schema、validation 都要有内容。"
             for call in calls:
-                messages.append(tool_message(
-                    str(call.get("id") or ""),
-                    "字段不完整。请重新调用 propose_skill，title、description、trigger、expert_role、instructions、output_schema、validation 都要有内容。",
-                ))
+                messages.append(tool_message(str(call.get("id") or ""), reason))
         else:
             messages.append({
                 "role": "user",
                 "content": "没有收到 propose_skill。请调用这个函数提交技能卡，不要把技能卡写在正文里。",
             })
         proposal = None
-    if not proposal or _missing(proposal):
+    if not proposal or _missing(proposal) or title_problem(str(proposal.get("title") or "")):
         session.set_ask(None)
         await emit({"type": "error", "message": "融合没有完成：模型没有提交完整的技能卡。"})
         await emit({"type": "tokens", "tokens": session.turn_tokens})
